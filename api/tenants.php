@@ -6,7 +6,12 @@ $user = authenticate();
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
-    $query = "SELECT t.*, u.unit_number FROM tenants t JOIN units u ON t.unit_id = u.id WHERE t.owner_id = :user_id ORDER BY t.id DESC";
+    // Fetch ALL tenant details for the Landlord
+    $query = "SELECT t.*, u.unit_number, p.name as property_name 
+              FROM tenants t 
+              JOIN units u ON t.unit_id = u.id 
+              JOIN properties p ON u.property_id = p.id
+              WHERE t.owner_id = :user_id ORDER BY t.id DESC";
     $stmt = $conn->prepare($query);
     $stmt->bindParam(':user_id', $user->user_id);
     $stmt->execute();
@@ -20,7 +25,7 @@ if ($method === 'POST') {
     try {
         $conn->beginTransaction();
 
-        // 1. Create a User Account for the Tenant (so they can log in)
+        // 1. Create a User Account for the Tenant
         $userQuery = "INSERT INTO users (full_name, email, password_hash, phone, role) VALUES (:name, :email, :password, :phone, 'tenant')";
         $userStmt = $conn->prepare($userQuery);
         $hashedPassword = password_hash($data->password, PASSWORD_BCRYPT);
