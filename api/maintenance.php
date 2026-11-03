@@ -33,6 +33,26 @@ if ($method === 'GET') {
 if ($method === 'POST') {
     $data = json_decode(file_get_contents("php://input"));
 
+    // LANDLORD: Add a new contractor
+    if (isset($data->action) && $data->action === 'add_contractor') {
+        if ($user->role !== 'landlord' && $user->role !== 'agent') {
+            http_response_code(403);
+            echo json_encode(["message" => "Unauthorized."]);
+            exit();
+        }
+
+        $query = "INSERT INTO contractors (name, trade, phone, owner_id) VALUES (:name, :trade, :phone, :owner_id)";
+        $stmt = $conn->prepare($query);
+        $stmt->execute([
+            ':name' => $data->name,
+            ':trade' => $data->trade,
+            ':phone' => $data->phone,
+            ':owner_id' => $user->user_id
+        ]);
+        echo json_encode(["message" => "Contractor added successfully."]);
+        exit();
+    }
+
     // TENANT: Log new issue
     if ($user->role === 'tenant') {
         $tQuery = $conn->prepare("SELECT id, unit_id FROM tenants WHERE user_id = :user_id LIMIT 1");
@@ -51,16 +71,12 @@ if ($method === 'POST') {
 
     // LANDLORD: Assign ticket OR Resolve ticket
     if ($user->role === 'landlord' || $user->role === 'agent') {
-        
-        // If the request is to resolve the ticket
         if (isset($data->status) && $data->status === 'Resolved') {
             $query = "UPDATE maintenance SET status = 'Resolved' WHERE id = :id";
             $stmt = $conn->prepare($query);
             $stmt->execute([':id' => $data->ticket_id]);
             echo json_encode(["message" => "Ticket marked as Resolved."]);
-        } 
-        // Otherwise, it's assigning a contractor or changing severity
-        else {
+        } else {
             $query = "UPDATE maintenance SET contractor_id = :cid, severity = :sev, status = 'In Progress' WHERE id = :id";
             $stmt = $conn->prepare($query);
             $stmt->execute([
