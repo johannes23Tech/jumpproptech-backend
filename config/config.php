@@ -48,3 +48,4 @@ if (getenv('APP_ENV') === 'production') {
 
 // Timezone
 date_default_timezone_set(getenv('APP_TIMEZONE') ?: 'Africa/Johannesburg');
+?>
