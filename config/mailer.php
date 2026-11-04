@@ -1,35 +1,38 @@
 <?php
-// config/mailer.php
+// config/mailer.php - Modern mailer configuration
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
 require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/config.php';
 
-function sendEmail($to, $subject, $body) {
+function sendEmail($to, $subject, $body, $altBody = '') {
     $mail = new PHPMailer(true);
 
     try {
         // Server settings
         $mail->isSMTP();
-        $mail->Host       = 'smtp.gmail.com';
+        $mail->Host       = getenv('MAIL_HOST') ?: 'smtp.gmail.com';
         $mail->SMTPAuth   = true;
         
-        // USE ENVIRONMENT VARIABLES FOR SECURITY!
-        $mail->Username   = getenv('MAIL_USERNAME'); 
-        $mail->Password   = getenv('MAIL_PASSWORD'); 
+        $mail->Username   = getenv('MAIL_USERNAME');
+        $mail->Password   = getenv('MAIL_PASSWORD');
         
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port       = 587;
+        $mail->SMTPSecure = getenv('MAIL_ENCRYPTION') === 'ssl' ? PHPMailer::ENCRYPTION_SMTPS : PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = intval(getenv('MAIL_PORT')) ?: 587;
 
         // Recipients
-        $mail->setFrom(getenv('MAIL_USERNAME'), 'Jump PropTech');
+        $mail->setFrom(getenv('MAIL_FROM') ?: getenv('MAIL_USERNAME'), getenv('MAIL_FROM_NAME') ?: 'Jump PropTech');
         $mail->addAddress($to);
 
         // Content
         $mail->isHTML(true);
         $mail->Subject = $subject;
         $mail->Body    = $body;
+        if ($altBody) {
+            $mail->AltBody = $altBody;
+        }
 
         $mail->send();
         return true;
@@ -38,4 +41,3 @@ function sendEmail($to, $subject, $body) {
         return false;
     }
 }
-?>
