@@ -1,91 +1,66 @@
 <?php
-// api/auth/login.php - Modernized login
-
 require_once '../../config/db.php';
-require_once '../../config/jwt.php';
 require_once '../../vendor/autoload.php';
 
-use Firebase\JWT\JWT;
+use \Firebase\JWT\JWT;
 
-header('Content-Type: application/json');
+define('JWT_SECRET', 'jumpproptech_super_secret_key_2025');
 
-// Get JSON input
-$input = file_get_contents("php://input");
-$data = json_decode($input);
+$data = json_decode(file_get_contents("php://input"));
 
-if (json_last_error() !== JSON_ERROR_NONE) {
-    http_response_code(400);
-    echo json_encode(["message" => "Invalid JSON format."]);
-    exit();
-}
+if (!empty($data->email) && !empty($data->password)) {
+    
+    try {
+        // Find user by email
+        $query = "SELECT id, full_name, email, password_hash, role FROM users WHERE email = :email LIMIT 1";
+        $stmt = $conn->prepare($query);
+        $stmt->bindParam(':email', $data->email);
+        $stmt->execute();
 
-// Validate input
-if (empty($data->email) || empty($data->password)) {
+        if ($stmt->rowCount() > 0) {
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // Verify the password matches the hash
+            if (password_verify($data->password, $user['password_hash'])) {
+                
+                // Generate JWT Token
+                $issuedAt = time();
+                $expirationTime = $issuedAt + (60 * 60 * 24); // 24 hours
+                $payload = [
+                    'iss' => 'jumpproptech',
+                    'iat' => $issuedAt,
+                    'exp' => $expirationTime,
+                    'user_id' => $user['id'],
+                    'role' => $user['role']
+                ];
+
+                $jwt = JWT::encode($payload, JWT_SECRET, 'HS256');
+
+                http_response_code(200);
+                echo json_encode([
+                    "message" => "Login successful.",
+                    "token" => $jwt,
+                    "user" => [
+                        "id" => $user['id'],
+                        "full_name" => $user['full_name'],
+                        "email" => $user['email'],
+                        "role" => $user['role']
+                    ]
+                ]);
+            } else {
+                http_response_code(401);
+                echo json_encode(["message" => "Invalid password."]);
+            }
+        } else {
+            http_response_code(404);
+            echo json_encode(["message" => "User not found."]);
+        }
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(["message" => "Login Error: " . $e->getMessage()]);
+    }
+} else {
     http_response_code(400);
     echo json_encode(["message" => "Email and password are required."]);
-    exit();
 }
-
-// Sanitize email
-$email = filter_var(trim($data->email), FILTER_SANITIZE_EMAIL);
-if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-    http_response_code(400);
-    echo json_encode(["message" => "Invalid email format."]);
-    exit();
-}
-
-try {
-    // Find user by email
-    $query = "SELECT id, full_name, email, password_hash, role, subscription_status FROM users WHERE email = :email LIMIT 1";
-    $stmt = $conn->prepare($query);
-    $stmt->bindParam(':email', $email, PDO::PARAM_STR);
-    $stmt->execute();
-    
-    if ($stmt->rowCount() === 0) {
-        http_response_code(401);
-        echo json_encode(["message" => "Invalid credentials."]);
-        exit();
-    }
-    
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    // Verify password
-    if (!password_verify($data->password, $user['password_hash'])) {
-        http_response_code(401);
-        echo json_encode(["message" => "Invalid credentials."]);
-        exit();
-    }
-    
-    // Generate JWT token
-    $issuedAt = time();
-    $expirationTime = $issuedAt + JWT_EXPIRY;
-    
-    $payload = [
-        'iss' => JWT_ISSUER,
-        'iat' => $issuedAt,
-        'exp' => $expirationTime,
-        'user_id' => intval($user['id']),
-        'role' => $user['role'],
-        'email' => $user['email']
-    ];
-    
-    $jwt = JWT::encode($payload, JWT_SECRET, JWT_ALGO);
-    
-    http_response_code(200);
-    echo json_encode([
-        "message" => "Login successful",
-        "token" => $jwt,
-        "user" => [
-            "id" => intval($user['id']),
-            "full_name" => $user['full_name'],
-            "email" => $user['email'],
-            "role" => $user['role'],
-            "subscription_status" => $user['subscription_status'] ?? null
-        ]
-    ]);
-    
-} catch (PDOException $e) {
-    error_log("Login error: " . $e->getMessage());
-    http_response_code(500);
-    echo json_encode(["message" => "An error occurred during login."]);
-}
+?>
