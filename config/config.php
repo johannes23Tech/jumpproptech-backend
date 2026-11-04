@@ -1,7 +1,7 @@
 <?php
 // config/config.php - Modern configuration with environment variables
 
-// Load environment variables if .env exists
+// 1. Load environment variables if .env exists
 if (file_exists(__DIR__ . '/../.env')) {
     $lines = file(__DIR__ . '/../.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
@@ -18,7 +18,7 @@ if (file_exists(__DIR__ . '/../.env')) {
     }
 }
 
-// CORS headers
+// 2. CORS Headers
 $allowedOrigins = explode(',', getenv('ALLOWED_ORIGINS') ?: 'https://jumpproptech-frontend.vercel.app,http://localhost:5173,http://localhost:3000');
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 if (in_array($origin, $allowedOrigins)) {
@@ -31,13 +31,13 @@ header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-W
 header("Access-Control-Allow-Credentials: true");
 header("Content-Type: application/json; charset=UTF-8");
 
-// Handle preflight requests
+// 3. Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
-// Error reporting (disable in production)
+// 4. Error reporting (disable in production)
 if (getenv('APP_ENV') === 'production') {
     error_reporting(0);
     ini_set('display_errors', 0);
@@ -46,6 +46,6 @@ if (getenv('APP_ENV') === 'production') {
     ini_set('display_errors', 1);
 }
 
-// Timezone
+// 5. Timezone
 date_default_timezone_set(getenv('APP_TIMEZONE') ?: 'Africa/Johannesburg');
 ?>
