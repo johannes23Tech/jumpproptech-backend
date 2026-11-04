@@ -1,51 +1,55 @@
 <?php
-// config/config.php - Modern configuration with environment variables
+// config/db.php
 
-// 1. Load environment variables if .env exists
-if (file_exists(__DIR__ . '/../.env')) {
-    $lines = file(__DIR__ . '/../.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    foreach ($lines as $line) {
-        if (strpos(trim($line), '#') === 0) continue;
-        if (strpos($line, '=') !== false) {
-            list($key, $value) = explode('=', $line, 2);
-            $key = trim($key);
-            $value = trim($value);
-            if (!array_key_exists($key, $_ENV) && !getenv($key)) {
-                putenv("$key=$value");
-                $_ENV[$key] = $value;
-            }
-        }
-    }
-}
+require_once __DIR__ . '/config.php';
 
-// 2. CORS Headers
-$allowedOrigins = explode(',', getenv('ALLOWED_ORIGINS') ?: 'https://jumpproptech-frontend.vercel.app,http://localhost:5173,http://localhost:3000');
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-if (in_array($origin, $allowedOrigins)) {
-    header("Access-Control-Allow-Origin: $origin");
-} else {
-    header("Access-Control-Allow-Origin: " . $allowedOrigins[0]);
-}
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS, DELETE, PUT, PATCH");
-header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
-header("Access-Control-Allow-Credentials: true");
-header("Content-Type: application/json; charset=UTF-8");
+// Fetch credentials
+$host = getenv('DB_HOST') ?: 'jumpproptech-db.mysql.database.azure.com';
+$db_name = getenv('DB_NAME') ?: 'jumpproptech';
+$username = getenv('DB_USER') ?: 'jumpproptech';
+$password = getenv('DB_PASS') ?: 'Matlola@2026';
+$port = '3306'; // Force the default Azure port
 
-// 3. Handle preflight requests
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
+// 1. Define the ABSOLUTE path to the certificate
+$ca_path = '/var/www/html/DigiCertGlobalRootG2.crt.pem';
+
+// 2. Check if the file exists and is readable
+if (!file_exists($ca_path)) {
+    http_response_code(500);
+    echo json_encode([
+        "error" => "Certificate Missing",
+        "details" => "PHP cannot find the certificate at: " . $ca_path
+    ]);
     exit();
 }
 
-// 4. Error reporting (disable in production)
-if (getenv('APP_ENV') === 'production') {
-    error_reporting(0);
-    ini_set('display_errors', 0);
-} else {
-    error_reporting(E_ALL);
-    ini_set('display_errors', 1);
-}
+try {
+    // 3. Explicitly include the port in the DSN
+    $dsn = "mysql:host=$host;port=$port;dbname=$db_name;charset=utf8mb4";
+    
+    $options = [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::MYSQL_ATTR_SSL_CA => $ca_path, 
+        PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false,
+    ];
+    
+    $conn = new PDO($dsn, $username, $password, $options);
+    
+} catch(PDOException $e) {
+    http_response_code(500);
+    
+    $details = $e->getMessage();
+    
+    // If it fails, run a quick DNS check to see if the host is even reachable
+    if (strpos($details, '2002') !== false) {
+        $ip = gethostbyname($host);
+        $details .= " | Host resolved to IP: $ip";
+    }
 
-// 5. Timezone
-date_default_timezone_set(getenv('APP_TIMEZONE') ?: 'Africa/Johannesburg');
+    echo json_encode([
+        "error" => "Database connection failed.",
+        "details" => $details
+    ]);
+    exit();
+}
 ?>
