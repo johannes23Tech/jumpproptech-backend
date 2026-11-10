@@ -1,14 +1,26 @@
 <?php
 require_once '../config/db.php';
+require_once '../config/security.php';
+require_once '../config/audit.php';
 require_once '../middleware/check_role.php';
 require_once '../vendor/autoload.php';
 
 use Dompdf\Dompdf;
 
 $user = authenticate();
-$tenant_id = $_GET['tenant_id'] ?? 0;
 
-// Fetch Tenant, Unit, Property, and Landlord details
+// Only property-side accounts may generate a lease.
+if (!in_array($user->role, ['landlord', 'agent', 'superadmin'], true)) {
+    security_json_response(403, ["message" => "Unauthorized."]);
+}
+
+$tenantId = filter_var($_GET['tenant_id'] ?? 0, FILTER_VALIDATE_INT);
+if ($tenantId === false || $tenantId < 1) {
+    security_json_response(400, ["message" => "A valid tenant id is required."]);
+}
+
+// Fetch Tenant, Unit, Property, and Landlord details. The owner/agent
+// predicate is applied unless the caller is a superadmin.
 $query = "SELECT 
             t.name as tenant_name, t.id_number, t.phone, t.email, t.lease_start, t.lease_end, t.deposit, t.monthly_rent,
             u.unit_number, u.size_dimensions, u.is_furnished,
@@ -18,19 +30,33 @@ $query = "SELECT
           JOIN units u ON t.unit_id = u.id 
           JOIN properties p ON u.property_id = p.id
           JOIN users l ON t.owner_id = l.id
-          WHERE t.id = :tenant_id AND t.owner_id = :owner_id";
-          
+          WHERE t.id = :tenant_id";
+
+$params = [':tenant_id' => $tenantId];
+
+if ($user->role !== 'superadmin') {
+    $query .= " AND (t.owner_id = :uid_owner OR p.landlord_id = :uid_landlord OR p.agent_id = :uid_agent)";
+    $params[':uid_owner'] = $user->user_id;
+    $params[':uid_landlord'] = $user->user_id;
+    $params[':uid_agent'] = $user->user_id;
+}
+
 $stmt = $conn->prepare($query);
-$stmt->execute([':tenant_id' => $tenant_id, ':owner_id' => $user->user_id]);
+$stmt->execute($params);
 $data = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$data) {
-    http_response_code(404);
-    echo json_encode(["message" => "Tenant not found or unauthorized."]);
-    exit();
+    security_json_response(404, ["message" => "Tenant not found or unauthorized."]);
 }
 
-$furnished = $data['is_furnished'] ? "Fully Furnished" : "Unfurnished";
+// Escape every database value before it is interpolated into the document.
+// Without this, a tenant name such as </td></tr><script>... can break the
+// document structure or inject markup into the generated PDF.
+$e = static function ($value): string {
+    return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+};
+
+$furnished = $data['is_furnished'] ? 'Fully Furnished' : 'Unfurnished';
 $today = date('d F Y');
 
 // Build the HTML Lease Document
@@ -55,26 +81,26 @@ $html = "
     <p>This lease agreement is made and entered into on this <strong>{$today}</strong>, between:</p>
     
     <h2>1. THE LANDLORD</h2>
-    <p><strong>{$data['landlord_name']}</strong></p>
+    <p><strong>{$e($data['landlord_name'])}</strong></p>
     
     <h2>2. THE TENANT</h2>
-    <p><strong>{$data['tenant_name']}</strong><br>
-    ID/Passport: {$data['id_number']}<br>
-    Phone: {$data['phone']}<br>
-    Email: {$data['email']}</p>
+    <p><strong>{$e($data['tenant_name'])}</strong><br>
+    ID/Passport: {$e($data['id_number'])}<br>
+    Phone: {$e($data['phone'])}<br>
+    Email: {$e($data['email'])}</p>
     
     <h2>3. THE PREMISES</h2>
     <p>The Landlord hereby lets to the Tenant the premises described as:<br>
-    <strong>{$data['property_name']} - Unit {$data['unit_number']}</strong><br>
-    Address: {$data['address']}<br>
-    Room Size: {$data['size_dimensions']} ({$furnished})</p>
+    <strong>{$e($data['property_name'])} - Unit {$e($data['unit_number'])}</strong><br>
+    Address: {$e($data['address'])}<br>
+    Room Size: {$e($data['size_dimensions'])} ({$e($furnished)})</p>
     
     <h2>4. TERM AND RENTAL</h2>
     <table class='details-table'>
-        <tr><td>Lease Start Date</td><td>{$data['lease_start']}</td></tr>
-        <tr><td>Lease End Date</td><td>{$data['lease_end']}</td></tr>
-        <tr><td>Monthly Rent</td><td>R {$data['monthly_rent']}</td></tr>
-        <tr><td>Deposit Paid</td><td>R {$data['deposit']}</td></tr>
+        <tr><td>Lease Start Date</td><td>{$e($data['lease_start'])}</td></tr>
+        <tr><td>Lease End Date</td><td>{$e($data['lease_end'])}</td></tr>
+        <tr><td>Monthly Rent</td><td>R {$e($data['monthly_rent'])}</td></tr>
+        <tr><td>Deposit Paid</td><td>R {$e($data['deposit'])}</td></tr>
     </table>
 
     <h2>5. GENERAL TERMS</h2>
@@ -94,6 +120,11 @@ $dompdf->loadHtml($html);
 $dompdf->setPaper('A4', 'portrait');
 $dompdf->render();
 
+audit_log($conn, (int) $user->user_id, 'lease.generated', [
+    'entity_type' => 'tenant',
+    'entity_id' => $tenantId,
+]);
+
 // Stream the PDF to the browser (Attachment = true forces download)
-$dompdf->stream("Lease_{$data['tenant_name']}.pdf", ["Attachment" => true]);
-?>
+$filename = 'Lease_' . security_sanitize_filename((string) $data['tenant_name']) . '.pdf';
+$dompdf->stream($filename, ["Attachment" => true]);

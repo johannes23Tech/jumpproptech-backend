@@ -21,9 +21,105 @@ function security_json_response(int $status, array $payload, array $headers = []
     exit();
 }
 
+/**
+ * Addresses whose X-Forwarded-For header we trust. Loopback and RFC1918/ULA
+ * ranges cover the common "app server behind a local reverse proxy" setup.
+ * Add public proxy ranges (Render, Cloudflare, ALB) via TRUSTED_PROXIES.
+ */
+function security_trusted_proxies(): array
+{
+    $defaults = [
+        '127.0.0.1', '::1',
+        '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+        'fc00::/7',
+    ];
+
+    $configured = getenv('TRUSTED_PROXIES');
+    if ($configured === false || trim($configured) === '') {
+        return $defaults;
+    }
+
+    return array_values(array_filter(array_map('trim', explode(',', $configured))));
+}
+
+function security_ip_matches(string $ip, string $entry): bool
+{
+    if (strpos($entry, '/') === false) {
+        return $ip === $entry;
+    }
+
+    [$subnet, $bits] = explode('/', $entry, 2);
+    $bits = (int) $bits;
+    $ipBin = @inet_pton($ip);
+    $netBin = @inet_pton($subnet);
+
+    if ($ipBin === false || $netBin === false || strlen($ipBin) !== strlen($netBin)) {
+        return false;
+    }
+    if ($bits < 0 || $bits > strlen($ipBin) * 8) {
+        return false;
+    }
+
+    $wholeBytes = intdiv($bits, 8);
+    if ($wholeBytes > 0 && substr($ipBin, 0, $wholeBytes) !== substr($netBin, 0, $wholeBytes)) {
+        return false;
+    }
+
+    $remainder = $bits % 8;
+    if ($remainder === 0) {
+        return true;
+    }
+
+    $mask = (0xFF << (8 - $remainder)) & 0xFF;
+    return (ord($ipBin[$wholeBytes]) & $mask) === (ord($netBin[$wholeBytes]) & $mask);
+}
+
+function security_ip_in_list(string $ip, array $list): bool
+{
+    foreach ($list as $entry) {
+        if (security_ip_matches($ip, $entry)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Best-effort client IP.
+ *
+ * X-Forwarded-For is only honoured when the immediate peer is a trusted proxy.
+ * Otherwise any client could forge the header and dodge per-IP rate limits.
+ * When the chain is present we return the closest untrusted hop from the right,
+ * which is the real client address behind Render/nginx/Cloudflare.
+ */
 function security_client_ip(): string
 {
-    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+    if ($remote === '' || !filter_var($remote, FILTER_VALIDATE_IP)) {
+        $remote = '0.0.0.0';
+    }
+
+    $trusted = security_trusted_proxies();
+    if (!security_ip_in_list($remote, $trusted)) {
+        return $remote;
+    }
+
+    $forwarded = (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');
+    if ($forwarded === '') {
+        return $remote;
+    }
+
+    $chain = array_filter(array_map('trim', explode(',', $forwarded)));
+    for ($i = count($chain) - 1; $i >= 0; $i--) {
+        if (!filter_var($chain[$i], FILTER_VALIDATE_IP)) {
+            continue;
+        }
+        if (!security_ip_in_list($chain[$i], $trusted)) {
+            return $chain[$i];
+        }
+    }
+
+    return $remote;
 }
 
 /**

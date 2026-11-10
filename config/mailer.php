@@ -18,8 +18,19 @@ function sendEmail($to, $subject, $body, $altBody = '') {
         
         $mail->Username   = getenv('MAIL_USERNAME');
         $mail->Password   = getenv('MAIL_PASSWORD');
-        
-        $mail->SMTPSecure = getenv('MAIL_ENCRYPTION') === 'ssl' ? PHPMailer::ENCRYPTION_SMTPS : PHPMailer::ENCRYPTION_STARTTLS;
+
+        // MAIL_ENCRYPTION: "ssl" (implicit TLS), "tls" (STARTTLS, default),
+        // or "none" for a local capture server. Production must use ssl/tls.
+        $encryption = strtolower((string) getenv('MAIL_ENCRYPTION'));
+        if ($encryption === 'ssl') {
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
+        } elseif ($encryption === 'none') {
+            $mail->SMTPSecure = '';
+            $mail->SMTPAutoTLS = false;
+        } else {
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        }
+
         $mail->Port       = intval(getenv('MAIL_PORT')) ?: 587;
 
         // Recipients

@@ -1,27 +1,42 @@
-<?php
-// .htaccess - URL rewriting and security headers
+# JumpPropTech — Apache hardening + security headers
+# NOTE: the production Dockerfile uses nginx, which ignores .htaccess.
+# Keep this file for Apache/XAMPP deployments and mirror the rules in nginx
+# (see deploy/nginx-security.conf).
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
+
+    # Block every dotfile (secrets, VCS metadata, editor state) except the
+    # ACME challenge path, which must stay reachable over plain HTTP.
+    RewriteRule (^|/)\.(?!well-known/) - [F,L]
+
+    # Application internals are include-only; never serve them over HTTP.
+    RewriteRule ^(config|middleware|migrations|vendor|deploy|phpMyAdmin)(/|$) - [F,L]
+
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteRule ^api/(.*)$ api/$1 [L]
 </IfModule>
 
 <IfModule mod_headers.c>
-    # Security headers
     Header always set X-Content-Type-Options "nosniff"
     Header always set X-Frame-Options "DENY"
-    Header always set X-XSS-Protection "1; mode=block"
     Header always set Referrer-Policy "strict-origin-when-cross-origin"
-    Header always set Permissions-Policy "geolocation=(), microphone=()"
+    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+    Header always set Cross-Origin-Resource-Policy "same-site"
+    Header always set Content-Security-Policy "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
+    Header always unset X-Powered-By
+    <FilesMatch "\.php$">
+        Header always set Cache-Control "no-store, no-cache, must-revalidate, private"
+    </FilesMatch>
+    # Enable only when the site is served over HTTPS:
+    # Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
 </IfModule>
 
-# Prevent access to sensitive files
-<FilesMatch "^(\.env|\.git|composer\.(json|lock)|README\.md)">
-    Order allow,deny
-    Deny from all
+# Block secrets, debug artifacts and database dumps by filename.
+<FilesMatch "^(\.env.*|\.git.*|\.htaccess|\.htpasswd|\.DS_Store|composer\.(json|lock)|README\.md|Dockerfile|.*\.(sql|log|bak|ini|sh|md|pem|crt|key))$">
+    Require all denied
 </FilesMatch>
 
-# Disable directory browsing
+# Disable directory browsing.
 Options -Indexes

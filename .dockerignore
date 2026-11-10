@@ -1,0 +1,12 @@
+# Never bake secrets, source history or local dependencies into the image.
+.git
+.gitignore
+.env
+.env.*
+node_modules
+vendor
+phpMyAdmin
+SECURITY_*.md
+*.log
+*.sql
+*.bak

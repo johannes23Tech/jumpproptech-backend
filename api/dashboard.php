@@ -4,18 +4,22 @@ require_once '../middleware/check_role.php';
 
 $user = authenticate();
 
-// 1. Fetch existing stats
+// 1. Fetch existing stats. Positional placeholders are used because the same
+// value appears in several sub-selects; native prepares reject repeated named
+// placeholders.
 $query = "SELECT 
-    (SELECT COUNT(*) FROM properties WHERE landlord_id = :user_id) as total_properties,
-    (SELECT COUNT(*) FROM units u JOIN properties p ON u.property_id = p.id WHERE p.landlord_id = :user_id) as total_units,
-    (SELECT COUNT(*) FROM units u JOIN properties p ON u.property_id = p.id WHERE p.landlord_id = :user_id AND u.status = 'Occupied') as occupied,
-    (SELECT COUNT(*) FROM units u JOIN properties p ON u.property_id = p.id WHERE p.landlord_id = :user_id AND u.status = 'Vacant') as vacant,
-    (SELECT SUM(amount) FROM rent_records r JOIN tenants t ON r.tenant_id = t.id WHERE t.owner_id = :user_id AND r.status = 'Paid') as collected,
-    (SELECT SUM(amount) FROM rent_records r JOIN tenants t ON r.tenant_id = t.id WHERE t.owner_id = :user_id AND r.status = 'Pending') as pending";
+    (SELECT COUNT(*) FROM properties WHERE landlord_id = ?) as total_properties,
+    (SELECT COUNT(*) FROM units u JOIN properties p ON u.property_id = p.id WHERE p.landlord_id = ?) as total_units,
+    (SELECT COUNT(*) FROM units u JOIN properties p ON u.property_id = p.id WHERE p.landlord_id = ? AND u.status = 'Occupied') as occupied,
+    (SELECT COUNT(*) FROM units u JOIN properties p ON u.property_id = p.id WHERE p.landlord_id = ? AND u.status = 'Vacant') as vacant,
+    (SELECT SUM(amount) FROM rent_records r JOIN tenants t ON r.tenant_id = t.id WHERE t.owner_id = ? AND r.status = 'Paid') as collected,
+    (SELECT SUM(amount) FROM rent_records r JOIN tenants t ON r.tenant_id = t.id WHERE t.owner_id = ? AND r.status = 'Pending') as pending";
 
 $stmt = $conn->prepare($query);
-$stmt->bindParam(':user_id', $user->user_id);
-$stmt->execute();
+$stmt->execute([
+    $user->user_id, $user->user_id, $user->user_id,
+    $user->user_id, $user->user_id, $user->user_id,
+]);
 $stats = $stmt->fetch(PDO::FETCH_ASSOC);
 
 // 2. Fetch Chart Data (Last 6 Months)

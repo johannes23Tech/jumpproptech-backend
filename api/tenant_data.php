@@ -1,15 +1,26 @@
 <?php
 require_once '../config/db.php';
+require_once '../config/security.php';
+require_once '../config/tenant_profile.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
+    // Provision a profile row for a tenant who registered before being linked
+    // to a unit, then read it with LEFT JOINs so an unassigned tenant still
+    // gets a usable payload (unit/property/rent simply come back as null/0).
+    $profile = tenant_profile_ensure($conn, (int) $user->user_id);
+    if ($profile === null) {
+        error_log('Tenant data row could not be provisioned for user ' . $user->user_id);
+        security_json_response(404, ["message" => "Tenant profile not found."]);
+    }
+
     $query = "SELECT t.*, u.unit_number, p.name as property_name 
               FROM tenants t 
-              JOIN units u ON t.unit_id = u.id 
-              JOIN properties p ON u.property_id = p.id 
+              LEFT JOIN units u ON t.unit_id = u.id 
+              LEFT JOIN properties p ON u.property_id = p.id 
               WHERE t.user_id = :user_id LIMIT 1";
     $stmt = $conn->prepare($query);
     $stmt->bindParam(':user_id', $user->user_id);
@@ -17,8 +28,7 @@ if ($method === 'GET') {
     $tenant = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$tenant) {
-        echo json_encode(["message" => "Tenant profile not found."]);
-        exit();
+        security_json_response(404, ["message" => "Tenant profile not found."]);
     }
 
     // Fetch Rent Records WITH Tenant and Property details for the receipt

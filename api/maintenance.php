@@ -1,5 +1,7 @@
 <?php
 require_once '../config/db.php';
+require_once '../config/security.php';
+require_once '../config/audit.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
@@ -44,11 +46,17 @@ if ($method === 'POST') {
         $query = "INSERT INTO contractors (name, trade, phone, owner_id) VALUES (:name, :trade, :phone, :owner_id)";
         $stmt = $conn->prepare($query);
         $stmt->execute([
-            ':name' => $data->name,
-            ':trade' => $data->trade,
-            ':phone' => $data->phone,
+            ':name' => security_clean_text($data->name ?? '', 100),
+            ':trade' => security_clean_text($data->trade ?? '', 100),
+            ':phone' => security_clean_text($data->phone ?? '', 20),
             ':owner_id' => $user->user_id
         ]);
+
+        audit_log($conn, (int) $user->user_id, 'contractor.created', [
+            'entity_type' => 'contractor',
+            'entity_id' => (int) $conn->lastInsertId(),
+        ]);
+
         echo json_encode(["message" => "Contractor added successfully."]);
         exit();
     }
@@ -59,31 +67,107 @@ if ($method === 'POST') {
         $tQuery->execute([':user_id' => $user->user_id]);
         $tenant = $tQuery->fetch(PDO::FETCH_ASSOC);
 
+        if (!$tenant) {
+            security_json_response(404, ["message" => "Tenant record not found."]);
+        }
+
+        // A self-registered tenant has a profile but no unit until the landlord
+        // links them; maintenance tickets require a unit (NOT NULL FK).
+        if (empty($tenant['unit_id'])) {
+            security_json_response(400, [
+                "message" => "No unit has been assigned to you yet. Please contact your landlord."
+            ]);
+        }
+
+        $description = security_clean_text($data->description ?? '', 2000);
+        if ($description === '') {
+            security_json_response(400, ["message" => "A description is required."]);
+        }
+
+        $photo = null;
+        if (isset($data->photo) && $data->photo !== '') {
+            $photo = security_clean_document($data->photo);
+            if ($photo === null) {
+                security_json_response(400, ["message" => "Photo must be an image or an https link."]);
+            }
+        }
+
         $query = "INSERT INTO maintenance (tenant_id, unit_id, category, description, priority, photo) VALUES (:tid, :uid, :cat, :desc, :prio, :photo)";
         $stmt = $conn->prepare($query);
         $stmt->execute([
             ':tid' => $tenant['id'], ':uid' => $tenant['unit_id'],
-            ':cat' => $data->category, ':desc' => $data->description,
-            ':prio' => $data->priority, ':photo' => $data->photo
+            ':cat' => security_clean_text($data->category ?? '', 50),
+            ':desc' => $description,
+            ':prio' => security_clean_text($data->priority ?? 'Routine', 20),
+            ':photo' => $photo
         ]);
+
+        audit_log($conn, (int) $user->user_id, 'maintenance.ticket_created', [
+            'entity_type' => 'maintenance',
+            'entity_id' => (int) $conn->lastInsertId(),
+        ]);
+
         echo json_encode(["message" => "Ticket created."]);
     }
 
     // LANDLORD: Assign ticket OR Resolve ticket
     if ($user->role === 'landlord' || $user->role === 'agent') {
+        if (empty($data->ticket_id)) {
+            http_response_code(400);
+            echo json_encode(["message" => "Ticket id is required."]);
+            exit();
+        }
+
+        // Authorize: the ticket must belong to the caller's property.
+        $check = $conn->prepare(
+            "SELECT m.id
+             FROM maintenance m
+             JOIN tenants t ON m.tenant_id = t.id
+             LEFT JOIN units u ON m.unit_id = u.id
+             LEFT JOIN properties p ON u.property_id = p.id
+             WHERE m.id = :id AND (t.owner_id = :uid_owner OR p.landlord_id = :uid_landlord OR p.agent_id = :uid_agent)
+             LIMIT 1"
+        );
+        $check->execute([
+            ':id' => $data->ticket_id,
+            ':uid_owner' => $user->user_id,
+            ':uid_landlord' => $user->user_id,
+            ':uid_agent' => $user->user_id,
+        ]);
+
+        if (!$check->fetchColumn()) {
+            http_response_code(404);
+            echo json_encode(["message" => "Ticket not found."]);
+            exit();
+        }
+
         if (isset($data->status) && $data->status === 'Resolved') {
             $query = "UPDATE maintenance SET status = 'Resolved' WHERE id = :id";
             $stmt = $conn->prepare($query);
             $stmt->execute([':id' => $data->ticket_id]);
+
+            audit_log($conn, (int) $user->user_id, 'maintenance.ticket_resolved', [
+                'entity_type' => 'maintenance',
+                'entity_id' => (int) $data->ticket_id,
+            ]);
+
             echo json_encode(["message" => "Ticket marked as Resolved."]);
         } else {
+            $severity = security_clean_text($data->severity ?? 'Routine', 20);
             $query = "UPDATE maintenance SET contractor_id = :cid, severity = :sev, status = 'In Progress' WHERE id = :id";
             $stmt = $conn->prepare($query);
             $stmt->execute([
-                ':cid' => empty($data->contractor_id) ? null : $data->contractor_id, 
-                ':sev' => $data->severity ?? 'Routine', 
+                ':cid' => empty($data->contractor_id) ? null : (int) $data->contractor_id, 
+                ':sev' => $severity, 
                 ':id' => $data->ticket_id
             ]);
+
+            audit_log($conn, (int) $user->user_id, 'maintenance.ticket_assigned', [
+                'entity_type' => 'maintenance',
+                'entity_id' => (int) $data->ticket_id,
+                'meta' => ['contractor_id' => empty($data->contractor_id) ? null : (int) $data->contractor_id],
+            ]);
+
             echo json_encode(["message" => "Ticket assigned."]);
         }
     }

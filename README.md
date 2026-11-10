@@ -50,7 +50,12 @@ See `.env.example` for all available configuration options.
 ## API Endpoints
 
 ### Authentication
-- `POST /api/auth/login.php` - User login
+- `POST /api/auth/login.php` - User login (returns `mfa_required` + `mfa_token` when 2FA is on)
+- `POST /api/auth/mfa_login.php` - Complete login with a TOTP or recovery code
+- `GET /api/auth/mfa_status.php` - Is 2FA enabled for the current account?
+- `POST /api/auth/mfa_setup.php` - Start 2FA enrolment (requires your password)
+- `POST /api/auth/mfa_enable.php` - Confirm a TOTP code and receive recovery codes
+- `POST /api/auth/mfa_disable.php` - Disable 2FA (requires password + code)
 - `POST /api/auth/register.php` - Tenant registration
 - `POST /api/auth/forgot_password.php` - Password reset request
 - `POST /api/auth/change_password.php` - Change password
@@ -85,12 +90,30 @@ See `.env.example` for all available configuration options.
 
 ## Security
 
-- All passwords are hashed using `password_hash()` with BCRYPT
-- JWT tokens for authentication
-- Role-based access control
-- CORS configured
-- SQL prepared statements
-- Environment variables for sensitive data
+- All passwords are hashed using `password_hash()` with BCRYPT (cost 12)
+- JWT access tokens with `scope`, `jti` and `ver` claims (single-device and global revocation)
+- TOTP two-factor authentication (RFC 6238) with single-use, hashed recovery codes
+- Role-based access control enforced server-side on every request
+- CORS allowlist; strict security headers and `no-store` on every API response
+- SQL prepared statements and input sanitisation
+- Environment variables for sensitive data; `.env` is never committed
+- CI runs secret scanning, dependency audits and PHP/TypeScript builds
+
+## Deployment notes
+
+- Copy `.env.example` to `.env` and fill in real values. `.env` is never
+  committed or baked into the image.
+- The container serves nginx, so `.htaccess` is **not** used. Hardening lives in
+  `deploy/nginx-security.conf` and is loaded through
+  `conf/nginx/nginx-site.conf` (the base image copies that file over
+  `sites-available/default.conf` on start). Keep both files in the image.
+- The invoice cron at `/api/cron/generate_invoices.php` reads `CRON_SECRET` from
+  the `X-Cron-Secret` header (or `Authorization: Bearer <CRON_SECRET>`). The old
+  `?key=` form is disabled unless `CRON_ALLOW_QUERY_SECRET=1` is set temporarily
+  during a scheduler migration. Point the scheduler at a private address; nginx
+  only allows loopback by default.
+- Rotate `JWT_SECRET`, `CRON_SECRET`, database and SMTP credentials if they were
+  ever committed to git history, then redeploy.
 
 ## License
 
