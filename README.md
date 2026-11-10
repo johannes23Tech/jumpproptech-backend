@@ -57,7 +57,7 @@ See `.env.example` for all available configuration options.
 
 ### Properties
 - `GET /api/properties.php` - List properties
-- `POST /api/properties.php` - Create property
+- `POST /api/properties.php` - Create property (super admins must include the target `landlord_id`)
 
 ### Units
 - `GET /api/units.php` - List units
@@ -73,6 +73,10 @@ See `.env.example` for all available configuration options.
 
 ### Dashboard
 - `GET /api/dashboard.php` - Dashboard statistics
+
+### FAQ Assistant
+- `GET /api/faq_bot.php` - Get suggested FAQ questions (requires authentication)
+- `POST /api/faq_bot.php` - Get a rule-based FAQ answer; send JSON such as `{"question":"How do I report maintenance?"}` (requires authentication)
 
 ### Admin
 - `POST /api/admin/create_landlord.php` - Create landlord (Super Admin only)
