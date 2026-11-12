@@ -145,6 +145,10 @@ try {
     // Same response for unknown emails and wrong passwords.
     security_json_response(401, ["message" => "Invalid credentials."]);
 } catch (Exception $e) {
-    error_log('Login error: ' . $e->getMessage());
-    security_json_response(500, ["message" => "Login failed. Please try again."]);
+    $requestId = bin2hex(random_bytes(8));
+    error_log('Login error [' . $requestId . ']: ' . $e->getMessage());
+    security_json_response(500, [
+        "message" => "Login failed. Please try again.",
+        "request_id" => $requestId,
+    ]);
 }

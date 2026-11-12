@@ -174,11 +174,13 @@ function security_clean_document($value, int $maxLength = 5000000): ?string
     return $value;
 }
 
-// Bcrypt truncates at 72 bytes, so rejecting longer input avoids silent
-// truncation. Cost 12 is a deliberate step up from PHP's default of 10.
+// Bcrypt truncates at 72 bytes, so enforce that separately from the
+// user-facing 12-character limit. Cost 12 is a deliberate step up from
+// PHP's default of 10.
 const SECURITY_BCRYPT_COST = 12;
-const SECURITY_PASSWORD_MIN = 12;
-const SECURITY_PASSWORD_MAX = 72;
+const SECURITY_PASSWORD_MIN = 8;
+const SECURITY_PASSWORD_MAX = 12;
+const SECURITY_PASSWORD_MAX_BYTES = 72;
 
 function security_hash_password(string $password): string
 {
@@ -192,7 +194,11 @@ function security_password_needs_rehash(string $hash): bool
 
 function security_validate_password(string $password): ?string
 {
-    $length = strlen($password);
+    $length = preg_match_all('/./us', $password);
+
+    if ($length === false) {
+        return 'Password must be valid UTF-8.';
+    }
 
     if ($length < SECURITY_PASSWORD_MIN) {
         return 'Password must be at least ' . SECURITY_PASSWORD_MIN . ' characters long.';
@@ -200,15 +206,23 @@ function security_validate_password(string $password): ?string
     if ($length > SECURITY_PASSWORD_MAX) {
         return 'Password must be at most ' . SECURITY_PASSWORD_MAX . ' characters long.';
     }
-    if (!preg_match('/[A-Za-z]/', $password) || !preg_match('/[0-9]/', $password)) {
-        return 'Password must include at least one letter and one number.';
+    if (strlen($password) > SECURITY_PASSWORD_MAX_BYTES) {
+        return 'Password must be at most ' . SECURITY_PASSWORD_MAX_BYTES . ' UTF-8 bytes long.';
+    }
+    if ($password !== trim($password)) {
+        return 'Password cannot start or end with a space.';
+    }
+    if (!preg_match('/[A-Z]/', $password)
+        || !preg_match('/[a-z]/', $password)
+        || !preg_match('/[0-9]/', $password)
+        || !preg_match('/[^A-Za-z0-9\s]/u', $password)) {
+        return 'Password must include uppercase and lowercase letters, a number, and a symbol.';
     }
 
     $common = [
-        'password1234', 'password12345', 'password123456', '123456789012',
-        '12345678901', 'qwertyuiop12', 'qwerty123456', 'letmein123456',
-        'admin123456', 'welcome12345', 'iloveyou1234', 'monkey123456',
-        'dragon123456', 'football1234', 'baseball1234', 'sunshine1234',
+        'password1!', 'password12!', 'welcome1!', 'qwerty1!',
+        'admin123!', 'p@ssw0rd', 'abcd1234!', 'test1234!',
+        'letmein1!', 'summer2024!', 'january1!', 'spring2024!',
     ];
     if (in_array(strtolower($password), $common, true)) {
         return 'Password is too common. Choose a stronger password.';

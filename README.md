@@ -50,7 +50,7 @@ See `.env.example` for all available configuration options.
 ## API Endpoints
 
 ### Authentication
-- `POST /api/auth/login.php` - User login (returns `mfa_required` + `mfa_token` when 2FA is on)
+- `POST /api/auth/login.php` - User login (returns `mfa_required` + `mfa_token` when 2FA is on); unexpected server errors include a `request_id` to match the PHP error log.
 - `POST /api/auth/mfa_login.php` - Complete login with a TOTP or recovery code
 - `GET /api/auth/mfa_status.php` - Is 2FA enabled for the current account?
 - `POST /api/auth/mfa_setup.php` - Start 2FA enrolment (requires your password)
@@ -90,7 +90,7 @@ See `.env.example` for all available configuration options.
 
 ## Security
 
-- All passwords are hashed using `password_hash()` with BCRYPT (cost 12)
+- Passwords must be 8–12 characters with uppercase + lowercase + number + symbol, pass the common-password blocklist, and are hashed using `password_hash()` with BCRYPT (cost 12)
 - JWT access tokens with `scope`, `jti` and `ver` claims (single-device and global revocation)
 - TOTP two-factor authentication (RFC 6238) with single-use, hashed recovery codes
 - Role-based access control enforced server-side on every request

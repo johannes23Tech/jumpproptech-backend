@@ -303,7 +303,7 @@ These should be preserved while fixing the write-path IDORs.
 
 ### Hardening (ongoing)
 
-14. **Password policy:** minimum 12 chars, block breached passwords (Have I Been Pwned k-anonymity API), consider Argon2id or bcrypt cost ≥ 12. Add MFA for superadmin/landlords.
+14. **Password policy:** enforce 8–12 characters, require uppercase + lowercase + number + symbol, block common passwords, and use bcrypt cost ≥ 12. Add MFA for superadmin/landlords.
 15. **Session/token lifecycle:** shorter access token (15–60 min) + refresh rotation, `aud`/`jti` validation, server-side revocation (`token_version`), logout invalidation, and re-check current role from DB on sensitive actions.
 16. **Audit logging:** append-only log of auth events, admin actions, rent changes, subscription toggles, data exports; alert on anomalies.
 17. **Container/deploy:** add `.dockerignore` (`.env`, `.git`, `node_modules`, `vendor` if rebuilt), pin the base image by digest, run as non-root, inject secrets at runtime, scan images (Trivy/Grype) in CI.
@@ -422,7 +422,7 @@ Enabling `PDO::ATTR_EMULATE_PREPARES => false` broke existing queries that reuse
 | Lease PDF output encoding | `api/generate_lease.php` | Role gate + owner/agent predicate; every DB value is HTML-escaped before interpolation; the download filename is sanitised (no CR/LF or path characters). Owners get a PDF, tenants get 403, non-owners get 404. |
 | Native server-side prepares | `config/db.php`, `api/dashboard.php`, `api/messages.php` | `PDO::ATTR_EMULATE_PREPARES => false`. Legacy queries that reused a named placeholder were rewritten to positional or distinct placeholders. |
 | Deployment-grade web server controls | `deploy/nginx-security.conf`, `deploy/php-hardening.ini`, `deploy/README.md`, `Dockerfile`, `.htaccess` | nginx denies dotfiles/secrets/dumps, restricts the cron endpoint to localhost, sets HSTS/headers and request limits; PHP disables `expose_php`/`display_errors` and caps uploads. Apache `.htaccess` mirrors the dotfile/header rules. Security headers are also emitted from `config/config.php` as defence in depth. |
-| Password hash/policy upgrade | `config/security.php` | 12–72 characters, letter + number, common-password blocklist, bcrypt cost 12 with transparent rehash on login. Filename sanitiser shared by PDF output. |
+| Password hash/policy upgrade | `config/security.php` | 8–12 characters, uppercase + lowercase + number + symbol, common-password blocklist, bcrypt cost 12 with transparent rehash on login. Filename sanitiser shared by PDF output. |
 
 **New schema:** `users.token_version`, `revoked_tokens` (per-token denylist with expiry), `audit_logs` (with append-only triggers) and password-reset lookup indexes.
 

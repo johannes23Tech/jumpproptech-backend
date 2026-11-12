@@ -58,7 +58,7 @@ Implemented and verified in this repository:
 - Token revocation: every JWT carries `jti` + `ver`; `middleware/check_role.php` compares `ver` with `users.token_version` and checks the `revoked_tokens` deny-list. `POST /api/auth/logout.php` revokes one device, or all sessions with `{"all":true}`. Password change/reset bump the version.
 - Append-only audit trail: `audit_logs` records actor/action/entity/outcome/IP/user-agent/metadata; database triggers reject `UPDATE`/`DELETE`; writes fail open to `error_log`.
 - Password reset: SHA-256 token hashes, 30-minute expiry, single use, per-IP/per-email throttling, generic forgot-password response, and the `POST /api/auth/reset_password.php` endpoint.
-- Password policy: 12–72 characters, letter + number, common-password blocklist, bcrypt cost 12 with transparent rehash on login.
+- Password policy: 8–12 characters, uppercase + lowercase + number + symbol, common-password blocklist, bcrypt cost 12 with transparent rehash on login.
 - Ownership checks on rent, units, tenants, maintenance, messages and expenses; `send_receipt.php` derives the recipient from the tenant record and never trusts a request-supplied email.
 - Admin validation: `toggle_sub.php` accepts only `active`, `expired`, `suspended`, `past_due` and only for an existing landlord; `create_landlord.php` validates input, enforces the password policy, rate-limits and audits.
 - Lease PDF: role gate, owner/agent predicate, HTML-escaped values and a sanitised download filename.
@@ -139,7 +139,7 @@ This kills the stale-role problem (demoted user keeps access for 24h) and gives 
 ### 2.5 Registration
 
 - Email verification before the account can act.
-- Password policy: minimum 12 characters, block common/breached passwords, no maximum below 128.
+- Password policy: 8–12 characters, uppercase + lowercase + number + symbol, common-password blocklist, bcrypt cost 12.
 - Never allow role selection from the request (already correct).
 - Add a terms/consent record for POPIA.
 
