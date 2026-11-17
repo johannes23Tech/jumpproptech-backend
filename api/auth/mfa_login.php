@@ -8,6 +8,7 @@ require_once '../../config/db.php';
 require_once '../../config/security.php';
 require_once '../../config/audit.php';
 require_once '../../config/mfa.php';
+require_once '../../config/permissions.php';
 
 const MFA_LOGIN_MAX_ATTEMPTS = 7;
 const MFA_LOGIN_WINDOW = 900;
@@ -50,7 +51,7 @@ if ($retryAfter > 0) {
 try {
     $stmt = $conn->prepare(
         "SELECT id, full_name, email, role, token_version, mfa_enabled,
-                mfa_secret, mfa_last_step
+                mfa_secret, mfa_last_step, staff_role, account_type, company_id, is_active
          FROM users WHERE id = :id LIMIT 1"
     );
     $stmt->execute([':id' => $userId]);
@@ -62,6 +63,10 @@ try {
 
 if (!$user || (int) $user['mfa_enabled'] !== 1 || empty($user['mfa_secret'])) {
     security_json_response(401, ["message" => "Multi-factor authentication is not enabled for this account."]);
+}
+
+if (isset($user['is_active']) && (int) $user['is_active'] === 0) {
+    security_json_response(403, ["message" => "This account is inactive. Contact an administrator."]);
 }
 
 if ((int) $user['token_version'] !== (int) $challenge->ver) {
@@ -124,16 +129,11 @@ security_rate_limit_clear($conn, 'mfa_login', (string) $userId);
 
 audit_log($conn, $userId, 'auth.login.success', [
     'actor_email' => $user['email'],
-    'meta' => ['role' => $user['role'], 'mfa' => true],
+    'meta' => ['role' => permission_role_for_user($user), 'mfa' => true],
 ]);
 
 security_json_response(200, [
     "message" => "Login successful.",
     "token" => jwt_issue_access_token($user),
-    "user" => [
-        "id" => (int) $user['id'],
-        "full_name" => $user['full_name'],
-        "email" => $user['email'],
-        "role" => $user['role'],
-    ],
+    "user" => permission_user_payload($user),
 ]);

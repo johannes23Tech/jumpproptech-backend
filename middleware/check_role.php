@@ -4,6 +4,8 @@
 require_once __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../config/jwt.php';
 require_once __DIR__ . '/../config/security.php';
+require_once __DIR__ . '/../config/audit.php';
+require_once __DIR__ . '/../config/permissions.php';
 
 use \Firebase\JWT\JWT;
 use \Firebase\JWT\Key;
@@ -74,9 +76,10 @@ function authenticate() {
         }
 
         // Never trust the role in the token: fetch the current role,
-        // subscription state and token version from the DB.
+        // account state and token version from the DB.
         $userStmt = $conn->prepare(
-            "SELECT role, subscription_status, token_version
+            "SELECT role, subscription_status, token_version,
+                    staff_role, account_type, company_id, is_active
              FROM users WHERE id = :id LIMIT 1"
         );
         $userStmt->execute([':id' => $decoded->user_id]);
@@ -84,6 +87,11 @@ function authenticate() {
 
         if (!$currentUser) {
             security_json_response(401, ["message" => "Invalid or expired token."]);
+        }
+
+        // Deactivated accounts lose access immediately, even with a valid token.
+        if (isset($currentUser['is_active']) && (int) $currentUser['is_active'] === 0) {
+            security_json_response(403, ["message" => "This account is inactive. Contact an administrator."]);
         }
 
         // Bumping token_version invalidates every token issued before the bump.
@@ -96,19 +104,32 @@ function authenticate() {
             security_json_response(401, ["message" => "Session expired. Please log in again."]);
         }
 
+        // Keep the legacy role for endpoints that still use it, and expose the
+        // approved role + permission context for new checks.
         $decoded->role = $currentUser['role'];
+        $decoded->legacy_role = $currentUser['role'];
+        $decoded->staff_role = $currentUser['staff_role'] ?? null;
+        $decoded->account_type = $currentUser['account_type'] ?? ($currentUser['role'] === 'tenant' ? 'tenant' : 'staff');
+        $decoded->company_id = isset($currentUser['company_id']) ? (int) $currentUser['company_id'] : null;
+        $decoded->effective_role = permission_role_for_user($currentUser);
 
-        // ==========================================
-        // SUBSCRIPTION CHECK (Monetization)
-        // ==========================================
-        // Superadmins bypass this check. Tenants bypass this check (they are free).
-        if ($decoded->role !== 'superadmin' && $decoded->role !== 'tenant' && $decoded->role !== 'maintenance') {
-            if ($currentUser['subscription_status'] === 'expired') {
-                security_json_response(402, ["message" => "Your subscription has expired. Please renew your plan to continue managing your properties."]);
-            }
+        // The SaaS subscription gate is retired: JUMP PROPTECH is an internal
+        // company system, not a subscription product. The column remains
+        // dormant for historical records only.
+        //
+        // Auditor is read-only. Enforce it centrally so every endpoint is
+        // covered, not just the screens that hide buttons.
+        $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+        if ($decoded->effective_role === 'auditor' && !in_array($method, ['GET', 'HEAD', 'OPTIONS'], true)) {
+            audit_log($conn, (int) $decoded->user_id, 'auth.permission_denied', [
+                'entity_type' => 'route',
+                'outcome' => 'denied',
+                'meta' => ['role' => 'auditor', 'method' => $method, 'path' => (string) ($_SERVER['REQUEST_URI'] ?? '')],
+            ]);
+            security_json_response(403, ["message" => "Auditor accounts are read-only."]);
         }
 
-        return $decoded; // Returns the payload (user_id, role, jti, ver, exp, ...)
+        return $decoded; // Returns the payload (user_id, role, jti, ver, ...)
 
     } catch (Exception $e) {
         security_json_response(401, ["message" => "Invalid or expired token."]);

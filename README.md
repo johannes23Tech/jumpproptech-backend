@@ -1,23 +1,24 @@
 # JumpPropTech Backend API
 
-A modern PHP REST API for property management built with PDO, JWT authentication, and PSR-4 autoloading support.
+A modern PHP REST API for the internal JUMP PROPTECH property-management platform, built with PDO, JWT authentication, and PSR-4 autoloading support.
 
 ## Features
 
 - JWT-based authentication
-- Role-based access control (Super Admin, Landlord, Agent, Tenant, Maintenance)
-- Property, Unit, Tenant, and Rent management
+- Approved role-based access control (8 staff roles + tenant)
+- Company-owned property, unit, tenant, and rent management
 - Expense tracking
 - Maintenance request system
 - Automated invoice generation
 - Email notifications via PHPMailer
 - PDF generation via DomPDF
-- Subscription management
+- Staff account management
+- Append-only audit logging
 
 ## Requirements
 
 - PHP 8.0+
-- MySQL 5.7+ / MariaDB 10.3+
+- MySQL 5.7+ / MariaDB 10.3+ (production: Azure Database for MySQL)
 - Composer
 - Apache/Nginx
 
@@ -40,7 +41,7 @@ cp .env.example .env
 ```
 Edit `.env` with your database, mail, and JWT credentials.
 
-4. Import database schema (if available)
+4. Run the migrations in `migrations/` (start with `2026-11-17_phase0_roles_and_company.sql`)
 5. Start your server
 
 ## Environment Variables
@@ -84,9 +85,23 @@ See `.env.example` for all available configuration options.
 - `POST /api/faq_bot.php` - Get a rule-based FAQ answer; send JSON such as `{"question":"How do I report maintenance?"}` (requires authentication)
 
 ### Admin
-- `POST /api/admin/create_landlord.php` - Create landlord (Super Admin only)
-- `POST /api/admin/toggle_sub.php` - Toggle subscription (Super Admin only)
-- `GET /api/admin/stats.php` - System stats (Super Admin only)
+- `GET /api/staff.php` - List staff accounts (requires `staff.view`)
+- `POST /api/staff.php` - Create a staff account with an approved `staff_role` (requires `staff.manage`)
+- `PATCH /api/staff.php` - Change a staff role or active state (requires `staff.manage`)
+- `POST /api/admin/create_landlord.php` - **Retired/legacy**; kept only for historical compatibility
+- `POST /api/admin/toggle_sub.php` - **Dormant**; the subscription gate has been removed
+- `GET /api/admin/stats.php` - System stats (Super Administrator only)
+
+## Roles and permissions
+
+The approved model is eight staff roles plus tenant:
+`super_administrator`, `administrator`, `property_manager`, `finance_accountant`,
+`maintenance_manager`, `maintenance_technician`, `reception_support`, `auditor`.
+
+Legacy `users.role` values are mapped to the approved roles by
+`config/permissions.php`. See `docs/PERMISSIONS.md` for the capability matrix and
+migration notes. The public marketplace, landlord/agency self-registration and
+paywall are frozen and must not be extended.
 
 ## Security
 

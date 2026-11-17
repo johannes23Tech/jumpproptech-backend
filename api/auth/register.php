@@ -82,8 +82,8 @@ try {
     $role = 'tenant';
     $subStatus = 'active';
 
-    $query = "INSERT INTO users (full_name, email, password_hash, phone, role, subscription_status) 
-              VALUES (:full_name, :email, :password_hash, :phone, :role, :sub_status)";
+    $query = "INSERT INTO users (full_name, email, password_hash, phone, role, account_type, subscription_status) 
+              VALUES (:full_name, :email, :password_hash, :phone, :role, 'tenant', :sub_status)";
 
     $stmt = $conn->prepare($query);
     $password_hash = security_hash_password($data->password);
@@ -118,7 +118,10 @@ try {
                 "id" => $userId,
                 "full_name" => $fullName,
                 "email" => $email,
-                "role" => $role
+                "role" => $role,
+                "staff_role" => null,
+                "account_type" => "tenant",
+                "permissions" => []
             ]
         ]);
     }

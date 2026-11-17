@@ -2,20 +2,23 @@
 require_once '../config/db.php';
 require_once '../config/security.php';
 require_once '../config/audit.php';
+require_once '../config/permissions.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
+$actor = (array) $user;
 $method = $_SERVER['REQUEST_METHOD'];
 
-// Tenant and maintenance accounts must not list or create tenants.
-if (!in_array($user->role, ['landlord', 'agent'], true)) {
-    http_response_code(403);
-    echo json_encode(["message" => "Unauthorized. Landlord or agent access required."]);
-    exit();
+// Tenants and maintenance technicians never list or create tenancy records.
+if (!permission_is_staff($actor)) {
+    security_json_response(403, ["message" => "Unauthorized. Staff access required."]);
 }
 
 if ($method === 'GET') {
-    // OPTIMIZATION: Explicitly select only necessary fields to reduce payload size
+    permission_require($actor, 'tenants.view');
+
+    // Single-company portfolio: authorised staff see every company tenant.
+    // The old per-landlord owner_id filter is retired.
     $query = "SELECT 
                 t.id, t.name, t.phone, t.email, t.lease_start, t.lease_end, t.deposit, t.monthly_rent,
                 t.id_number, t.alt_email, t.emergency_contact_name, t.emergency_contact_phone, 
@@ -26,15 +29,16 @@ if ($method === 'GET') {
               FROM tenants t 
               JOIN units u ON t.unit_id = u.id 
               JOIN properties p ON u.property_id = p.id
-              WHERE t.owner_id = :user_id ORDER BY t.id DESC";
+              ORDER BY t.id DESC";
     $stmt = $conn->prepare($query);
-    $stmt->bindParam(':user_id', $user->user_id);
     $stmt->execute();
     echo json_encode($stmt->fetchAll(PDO::FETCH_ASSOC));
     exit();
 }
 
 if ($method === 'POST') {
+    permission_require($actor, 'tenants.manage');
+
     $data = json_decode(file_get_contents("php://input"));
 
     if (!is_object($data) || empty($data->name) || empty($data->email) || empty($data->password) || empty($data->unit_id)) {
@@ -78,22 +82,27 @@ if ($method === 'POST') {
         ]);
     }
 
-    // Authorize: the unit must belong to a property owned by the caller
-    // (or assigned to them as agent). The property owner becomes the tenant owner.
+    // Authorize: the unit must exist in the company register. The property's
+    // historical landlord_id becomes the tenant's owner reference so existing
+    // reports and message routing keep working for legacy records.
     $unitStmt = $conn->prepare(
         "SELECT p.landlord_id
          FROM units u
          JOIN properties p ON u.property_id = p.id
-         WHERE u.id = :unit_id AND (p.landlord_id = :uid_owner OR p.agent_id = :uid_agent)
+         WHERE u.id = :unit_id
          LIMIT 1"
     );
-    $unitStmt->execute([':unit_id' => $unitId, ':uid_owner' => $user->user_id, ':uid_agent' => $user->user_id]);
+    $unitStmt->execute([':unit_id' => $unitId]);
     $ownerId = $unitStmt->fetchColumn();
 
-    if (!$ownerId) {
-        http_response_code(404);
-        echo json_encode(["message" => "Unit not found."]);
-        exit();
+    if ($ownerId === false) {
+        security_json_response(404, ["message" => "Unit not found."]);
+    }
+
+    if ($ownerId === null || (int) $ownerId < 1) {
+        // A company-owned property created without a historical landlord
+        // reference falls back to the staff member creating the tenancy.
+        $ownerId = (int) $user->user_id;
     }
 
     try {
@@ -110,8 +119,8 @@ if ($method === 'POST') {
 
         // 2. Create a User Account for the Tenant
         // Tenants are 'active' by default (they don't pay the SaaS subscription)
-        $userQuery = "INSERT INTO users (full_name, email, password_hash, phone, role, subscription_status) 
-                      VALUES (:name, :email, :password, :phone, 'tenant', 'active')";
+        $userQuery = "INSERT INTO users (full_name, email, password_hash, phone, role, account_type, subscription_status) 
+                      VALUES (:name, :email, :password, :phone, 'tenant', 'tenant', 'active')";
         $userStmt = $conn->prepare($userQuery);
         $hashedPassword = security_hash_password((string) $data->password);
         $userStmt->execute([

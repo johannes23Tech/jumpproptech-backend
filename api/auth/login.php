@@ -4,6 +4,7 @@ require_once '../../config/jwt.php';
 require_once '../../config/security.php';
 require_once '../../config/audit.php';
 require_once '../../config/mfa.php';
+require_once '../../config/permissions.php';
 
 const LOGIN_MAX_ATTEMPTS = 5;   // per email + IP
 const LOGIN_MAX_IP_ATTEMPTS = 50; // per IP, stops spraying many accounts (high enough for shared NAT)
@@ -47,7 +48,8 @@ if ($retryAfter > 0) {
 
 try {
     // Find user by email
-    $query = "SELECT id, full_name, email, password_hash, role, token_version
+    $query = "SELECT id, full_name, email, password_hash, role, token_version,
+                     staff_role, account_type, company_id, is_active
               FROM users WHERE email = :email LIMIT 1";
     $stmt = $conn->prepare($query);
     $stmt->bindParam(':email', $email);
@@ -60,6 +62,16 @@ try {
     $passwordOk = password_verify($data->password, $user['password_hash'] ?? LOGIN_DUMMY_HASH);
 
     if ($user && $passwordOk) {
+        // Deactivated accounts must not receive a session.
+        if (isset($user['is_active']) && (int) $user['is_active'] === 0) {
+            audit_log($conn, (int) $user['id'], 'auth.login.denied', [
+                'actor_email' => $user['email'],
+                'outcome' => 'denied',
+                'meta' => ['reason' => 'inactive'],
+            ]);
+            security_json_response(403, ["message" => "This account is inactive. Contact an administrator."]);
+        }
+
         // Successful login: clear the counter for this account. The per-IP
         // counter is left alone so a valid account cannot reset spray limits.
         security_rate_limit_clear($conn, 'login', $emailKey);
@@ -107,18 +119,13 @@ try {
 
         audit_log($conn, (int) $user['id'], 'auth.login.success', [
             'actor_email' => $user['email'],
-            'meta' => ['role' => $user['role'], 'mfa' => false],
+            'meta' => ['role' => permission_role_for_user($user), 'mfa' => false],
         ]);
 
         security_json_response(200, [
             "message" => "Login successful.",
             "token" => $jwt,
-            "user" => [
-                "id" => $user['id'],
-                "full_name" => $user['full_name'],
-                "email" => $user['email'],
-                "role" => $user['role']
-            ]
+            "user" => permission_user_payload($user),
         ]);
     }
 

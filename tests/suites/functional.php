@@ -170,7 +170,9 @@ function run_functional(Reporter $reporter, int $port): void
         $body = qa_functional_json($response);
         Assert::matches('/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/', (string) ($body['token'] ?? ''));
         Assert::same(2, (int) ($body['user']['id'] ?? 0));
-        Assert::same('landlord', $body['user']['role'] ?? null);
+        Assert::same('property_manager', $body['user']['role'] ?? null);
+        Assert::same('property_manager', $body['user']['staff_role'] ?? null);
+        Assert::same('staff', $body['user']['account_type'] ?? null);
 
         $decoded = JWT::decode($body['token'], new \Firebase\JWT\Key(QA_JWT_SECRET, 'HS256'));
         Assert::same('access', $decoded->scope);
@@ -245,23 +247,24 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::contains('Session expired', $after['body']);
     });
 
-    $reporter->test('Expired subscriptions are blocked with 402 (login still succeeds)', function () use ($port): void {
+    $reporter->test('Expired subscription no longer blocks a staff account', function () use ($port): void {
         $login = qa_login($port, 'landlord.expired@qa.local');
         Assert::status(200, $login);
         $token = (string) (qa_functional_json($login)['token'] ?? '');
         Assert::ok($token !== '', 'expired landlord could not log in');
 
-        $blocked = qa_http('GET', $port, '/api/properties.php', ['headers' => ['Authorization' => 'Bearer ' . $token]]);
-        Assert::status(402, $blocked);
-        Assert::contains('subscription has expired', $blocked['body']);
+        // The SaaS paywall is retired. subscription_status is dormant and must
+        // not gate access to the internal platform.
+        $allowed = qa_http('GET', $port, '/api/properties.php', ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+        Assert::status(200, $allowed);
     });
 
-    $reporter->test('Tenant and maintenance roles bypass the SaaS subscription gate', function () use ($port): void {
+    $reporter->test('Tenant and maintenance accounts are not blocked by subscription state', function () use ($port): void {
         $tenant = qa_functional_request($port, 'GET', '/api/tenant_data.php', 'tenant.a');
-        Assert::same(200, $tenant['status'], 'tenant was blocked by the subscription gate');
+        Assert::same(200, $tenant['status'], 'tenant was blocked');
 
         $maintenance = qa_functional_request($port, 'GET', '/api/maintenance.php', 'maintenance');
-        Assert::same(200, $maintenance['status'], 'maintenance was blocked by the subscription gate');
+        Assert::same(200, $maintenance['status'], 'maintenance was blocked');
     });
 
     $reporter->test('Login is rate limited after repeated failures', function () use ($port): void {
@@ -920,19 +923,19 @@ function run_functional(Reporter $reporter, int $port): void
         $response = qa_functional_request($port, 'GET', '/api/admin/stats.php', 'superadmin');
         Assert::status(200, $response);
         $body = qa_functional_json($response);
-        foreach (['total_landlords', 'total_properties', 'total_units', 'total_rent_processed', 'recent_signups'] as $key) {
+        foreach (['total_staff', 'total_properties', 'total_units', 'total_rent_processed', 'recent_signups'] as $key) {
             Assert::ok(array_key_exists($key, $body), "admin stats missing {$key}");
         }
         Assert::same(
-            (int) qa_value("SELECT COUNT(*) FROM users WHERE role = 'landlord'"),
-            (int) $body['total_landlords']
+            (int) qa_value("SELECT COUNT(*) FROM users WHERE role <> 'tenant'"),
+            (int) $body['total_staff']
         );
         Assert::same(
             (int) qa_value('SELECT COUNT(*) FROM properties'),
             (int) $body['total_properties']
         );
         foreach ($body['recent_signups'] as $signup) {
-            Assert::same('landlord', $signup['role'] ?? null);
+            Assert::ok(($signup['role'] ?? '') !== 'tenant', 'recent staff list includes a tenant');
         }
 
         $denied = qa_functional_request($port, 'GET', '/api/admin/stats.php', 'landlord.a');
@@ -949,7 +952,7 @@ function run_functional(Reporter $reporter, int $port): void
 
         $login = qa_login($port, $email);
         Assert::status(200, $login);
-        Assert::same('landlord', qa_functional_json($login)['user']['role'] ?? null);
+        Assert::same('property_manager', qa_functional_json($login)['user']['role'] ?? null);
 
         $duplicate = qa_functional_request($port, 'POST', '/api/admin/create_landlord.php', 'superadmin', [
             'json' => ['full_name' => 'Created Landlord', 'email' => $email, 'password' => QA_PASSWORD],

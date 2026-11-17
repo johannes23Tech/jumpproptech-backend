@@ -2,26 +2,32 @@
 require_once '../config/db.php';
 require_once '../config/security.php';
 require_once '../config/audit.php';
+require_once '../config/permissions.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
+$actor = (array) $user;
 $method = $_SERVER['REQUEST_METHOD'];
 
+if (!permission_is_staff($actor)) {
+    security_json_response(403, ["message" => "Unauthorized. Staff access required."]);
+}
+
 if ($method === 'GET') {
-    // Fetch expenses with property names
+    permission_require($actor, 'expenses.view');
+
+    // Single-company portfolio: authorised staff see every company expense.
     $query = "SELECT e.*, p.name as property_name 
               FROM expenses e 
               JOIN properties p ON e.property_id = p.id 
-              WHERE e.owner_id = :user_id ORDER BY e.expense_date DESC";
+              ORDER BY e.expense_date DESC";
     $stmt = $conn->prepare($query);
-    $stmt->execute([':user_id' => $user->user_id]);
+    $stmt->execute();
     $expenses = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Fetch total rent collected this month
-    $rentQuery = "SELECT SUM(amount) as total_rent FROM rent_records WHERE status = 'Paid' AND tenant_id IN (SELECT id FROM tenants WHERE owner_id = :user_id)";
-    $rentStmt = $conn->prepare($rentQuery);
-    $rentStmt->execute([':user_id' => $user->user_id]);
-    $rentData = $rentStmt->fetch(PDO::FETCH_ASSOC);
+    // Company-wide rent collected to date.
+    $rentQuery = "SELECT SUM(amount) as total_rent FROM rent_records WHERE status = 'Paid'";
+    $rentData = $conn->query($rentQuery)->fetch(PDO::FETCH_ASSOC);
 
     echo json_encode([
         "expenses" => $expenses,
@@ -31,9 +37,7 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    if (!in_array($user->role, ['landlord', 'agent', 'superadmin'], true)) {
-        security_json_response(403, ["message" => "Unauthorized."]);
-    }
+    permission_require($actor, 'expenses.submit');
 
     $data = json_decode(file_get_contents("php://input"));
 
@@ -56,31 +60,18 @@ if ($method === 'POST') {
         security_json_response(400, ["message" => "A valid property, category, amount and date are required."]);
     }
 
-    // A non-admin may only add expenses to a property they own or manage.
-    if ($user->role === 'superadmin') {
-        $check = $conn->prepare("SELECT landlord_id FROM properties WHERE id = :pid LIMIT 1");
-        $check->execute([':pid' => $propertyId]);
-        $property = $check->fetch(PDO::FETCH_ASSOC);
+    // The property must exist in the company register. expenses.owner_id stays
+    // as a historical creator/owner reference for existing reports.
+    $check = $conn->prepare("SELECT landlord_id FROM properties WHERE id = :pid LIMIT 1");
+    $check->execute([':pid' => $propertyId]);
+    $property = $check->fetch(PDO::FETCH_ASSOC);
 
-        if (!$property) {
-            security_json_response(404, ["message" => "Property not found."]);
-        }
-        $ownerId = (int) $property['landlord_id'];
-    } else {
-        $check = $conn->prepare(
-            "SELECT id FROM properties
-             WHERE id = :pid AND (landlord_id = :uid_landlord OR agent_id = :uid_agent)
-             LIMIT 1"
-        );
-        $check->execute([
-            ':pid' => $propertyId,
-            ':uid_landlord' => $user->user_id,
-            ':uid_agent' => $user->user_id,
-        ]);
+    if (!$property) {
+        security_json_response(404, ["message" => "Property not found."]);
+    }
 
-        if (!$check->fetchColumn()) {
-            security_json_response(404, ["message" => "Property not found."]);
-        }
+    $ownerId = (int) ($property['landlord_id'] ?? 0);
+    if ($ownerId < 1) {
         $ownerId = (int) $user->user_id;
     }
 
@@ -104,4 +95,5 @@ if ($method === 'POST') {
 
     security_json_response(200, ["message" => "Expense added successfully."]);
 }
-?>
+
+security_json_response(405, ["message" => "Method not allowed."]);

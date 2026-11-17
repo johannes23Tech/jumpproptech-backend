@@ -206,7 +206,10 @@ function run_structural(Reporter $reporter): void
         Assert::contains('decoded->ver !== (int) $currentUser', $middleware);
         Assert::contains('security_token_is_revoked', $middleware);
         Assert::contains("decoded->scope !== 'access'", $middleware);
-        Assert::contains("security_json_response(402", $middleware, 'expired subscriptions are not blocked');
+        Assert::notContains('security_json_response(402', $middleware, 'the retired SaaS paywall gate is still active');
+        Assert::contains('permission_role_for_user', $middleware, 'middleware does not resolve the approved role');
+        Assert::contains('effective_role', $middleware, 'middleware does not expose the effective role');
+        Assert::contains('Auditor accounts are read-only', $middleware, 'auditor read-only rule missing');
     });
 
     $reporter->test('Login uses generic errors, rate limits and constant-time-ish hashing', function (): void {
@@ -283,6 +286,16 @@ function run_structural(Reporter $reporter): void
         foreach (['id_number', 'occupants', 'alt_email', 'id_document'] as $column) {
             Assert::contains($column, $profile, "profile migration missing {$column}");
         }
+
+        $phase0 = qa_source('migrations/2026-11-17_phase0_roles_and_company.sql');
+        foreach (['companies', 'staff_role', 'account_type', 'company_id', 'is_active'] as $token) {
+            Assert::contains($token, $phase0, "phase 0 migration missing {$token}");
+        }
+
+        $permissions = qa_source('config/permissions.php');
+        foreach (['super_administrator', 'finance_accountant', 'maintenance_technician', 'auditor', 'permission_require'] as $token) {
+            Assert::contains($token, $permissions, "permission framework missing {$token}");
+        }
     });
 
     $reporter->section('Structural — live schema');
@@ -290,7 +303,7 @@ function run_structural(Reporter $reporter): void
     $reporter->test('Disposable QA schema has every table the API uses', function (): void {
         $tables = qa_query('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()');
         $names = array_column($tables, 'TABLE_NAME');
-        foreach (['users', 'properties', 'units', 'tenants', 'rent_records', 'expenses', 'maintenance', 'messages', 'contractors', 'leases', 'password_resets', 'rate_limits', 'revoked_tokens', 'audit_logs'] as $table) {
+        foreach (['users', 'properties', 'units', 'tenants', 'rent_records', 'expenses', 'maintenance', 'messages', 'contractors', 'leases', 'password_resets', 'rate_limits', 'revoked_tokens', 'audit_logs', 'companies'] as $table) {
             Assert::ok(in_array($table, $names, true), "missing table: {$table}");
         }
     });
@@ -300,7 +313,7 @@ function run_structural(Reporter $reporter): void
             qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "users"'),
             'COLUMN_NAME'
         );
-        foreach (['id', 'full_name', 'email', 'password_hash', 'role', 'subscription_status', 'token_version', 'mfa_secret', 'mfa_enabled', 'mfa_recovery_codes', 'mfa_last_step'] as $column) {
+        foreach (['id', 'full_name', 'email', 'password_hash', 'role', 'subscription_status', 'token_version', 'mfa_secret', 'mfa_enabled', 'mfa_recovery_codes', 'mfa_last_step', 'staff_role', 'account_type', 'company_id', 'is_active'] as $column) {
             Assert::ok(in_array($column, $columns, true), "users missing column: {$column}");
         }
     });

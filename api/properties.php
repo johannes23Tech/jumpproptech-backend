@@ -2,31 +2,28 @@
 require_once '../config/db.php';
 require_once '../config/security.php';
 require_once '../config/audit.php';
+require_once '../config/permissions.php';
 require_once '../middleware/check_role.php';
 
 // Verify user and get their ID/Role
 $user = authenticate();
+$actor = (array) $user;
 
-if (!in_array($user->role, ['landlord', 'agent', 'superadmin'], true)) {
+if (permission_is_staff($actor)) {
+    permission_require($actor, 'properties.view');
+} else {
     security_json_response(403, ["message" => "Unauthorized access."]);
 }
 
 $method = $_SERVER['REQUEST_METHOD'];
 
 // --- GET: Fetch Properties ---
+// JUMP PROPTECH is a single-company portfolio. Every authorised staff member
+// sees the company register; the old per-landlord filter is retired.
 if ($method === 'GET') {
-    if ($user->role === 'superadmin') {
-        $query = "SELECT * FROM properties ORDER BY created_at DESC";
-        $stmt = $conn->prepare($query);
-        $stmt->execute();
-    } else {
-        // Landlords see their properties; agents are scoped by their account.
-        $query = "SELECT * FROM properties WHERE landlord_id = :user_id ORDER BY created_at DESC";
-        $stmt = $conn->prepare($query);
-        $stmt->bindParam(':user_id', $user->user_id);
-        $stmt->execute();
-    }
-    
+    $stmt = $conn->prepare("SELECT * FROM properties ORDER BY created_at DESC");
+    $stmt->execute();
+
     $properties = $stmt->fetchAll(PDO::FETCH_ASSOC);
     echo json_encode($properties);
     exit();
@@ -34,26 +31,12 @@ if ($method === 'GET') {
 
 // --- POST: Create Property ---
 if ($method === 'POST') {
+    permission_require($actor, 'properties.manage');
+
     $data = json_decode(file_get_contents("php://input"));
 
-    $landlordId = (int) $user->user_id;
-    if ($user->role === 'superadmin') {
-        $landlordId = filter_var(
-            is_object($data) ? ($data->landlord_id ?? null) : null,
-            FILTER_VALIDATE_INT
-        );
-        if ($landlordId === false || $landlordId < 1) {
-            security_json_response(400, ["message" => "A valid landlord_id is required."]);
-        }
-
-        $landlordCheck = $conn->prepare(
-            "SELECT id FROM users WHERE id = :landlord_id AND role = 'landlord' LIMIT 1"
-        );
-        $landlordCheck->execute([':landlord_id' => $landlordId]);
-        if (!$landlordCheck->fetchColumn()) {
-            security_json_response(404, ["message" => "Landlord not found."]);
-        }
-    }
+    $landlordId = (int) $user->user_id; // historical creator reference
+    $companyId = isset($user->company_id) && $user->company_id ? (int) $user->company_id : null;
 
     $name = is_object($data) && isset($data->name) && is_string($data->name)
         ? security_clean_text($data->name, 100) : '';
@@ -72,12 +55,13 @@ if ($method === 'POST') {
         ]);
     }
 
-    $query = "INSERT INTO properties (landlord_id, name, address, property_type)
-              VALUES (:landlord_id, :name, :address, :property_type)";
+    $query = "INSERT INTO properties (landlord_id, company_id, name, address, property_type)
+              VALUES (:landlord_id, :company_id, :name, :address, :property_type)";
 
     $stmt = $conn->prepare($query);
     if ($stmt->execute([
         ':landlord_id' => $landlordId,
+        ':company_id' => $companyId,
         ':name' => $name,
         ':address' => $address,
         ':property_type' => $propertyType,
@@ -87,7 +71,7 @@ if ($method === 'POST') {
         audit_log($conn, (int) $user->user_id, 'property.created', [
             'entity_type' => 'property',
             'entity_id' => $propertyId,
-            'meta' => ['landlord_id' => $landlordId],
+            'meta' => ['company_id' => $companyId],
         ]);
 
         security_json_response(201, ["message" => "Property created successfully.", "id" => $propertyId]);
