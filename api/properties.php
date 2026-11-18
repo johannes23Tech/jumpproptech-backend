@@ -51,6 +51,16 @@ if ($method === 'POST') {
         ? security_clean_text($data->name, 100) : '';
     $address = is_object($data) && isset($data->address) && is_string($data->address)
         ? security_clean_text($data->address, 255) : '';
+    $city = is_object($data) && isset($data->city) && is_string($data->city)
+        ? security_clean_text($data->city, 100) : '';
+    $province = is_object($data) && isset($data->province) && is_string($data->province)
+        ? security_clean_text($data->province, 100) : '';
+    $suburb = is_object($data) && isset($data->suburb) && is_string($data->suburb)
+        ? security_clean_text($data->suburb, 100) : '';
+    $postalCode = is_object($data) && isset($data->postal_code) && is_string($data->postal_code)
+        ? security_clean_text($data->postal_code, 20) : '';
+    $description = is_object($data) && isset($data->description) && is_string($data->description)
+        ? security_clean_text($data->description, 2000) : '';
     $propertyType = is_object($data) && isset($data->property_type) && is_string($data->property_type)
         ? trim($data->property_type) : '';
 
@@ -84,8 +94,10 @@ if ($method === 'POST') {
         ]);
     }
 
-    $query = "INSERT INTO properties (landlord_id, company_id, name, address, property_type)
-              VALUES (:landlord_id, :company_id, :name, :address, :property_type)";
+    $query = "INSERT INTO properties
+                (landlord_id, company_id, name, address, city, province, suburb, postal_code, description, property_type)
+              VALUES
+                (:landlord_id, :company_id, :name, :address, :city, :province, :suburb, :postal_code, :description, :property_type)";
 
     $stmt = $conn->prepare($query);
     if ($stmt->execute([
@@ -93,6 +105,11 @@ if ($method === 'POST') {
         ':company_id' => $companyId,
         ':name' => $name,
         ':address' => $address,
+        ':city' => $city !== '' ? $city : null,
+        ':province' => $province !== '' ? $province : null,
+        ':suburb' => $suburb !== '' ? $suburb : null,
+        ':postal_code' => $postalCode !== '' ? $postalCode : null,
+        ':description' => $description !== '' ? $description : null,
         ':property_type' => $propertyType,
     ])) {
         $propertyId = (int) $conn->lastInsertId();
@@ -151,6 +168,20 @@ if ($method === 'PATCH') {
         }
         $fields[] = 'property_type = :property_type';
         $params[':property_type'] = $propertyType;
+    }
+    $optionalText = [
+        'city' => 100,
+        'province' => 100,
+        'suburb' => 100,
+        'postal_code' => 20,
+        'description' => 2000,
+    ];
+    foreach ($optionalText as $field => $max) {
+        if (array_key_exists($field, (array) $data)) {
+            $value = is_string($data->$field) ? security_clean_text($data->$field, $max) : '';
+            $fields[] = "$field = :$field";
+            $params[":$field"] = $value !== '' ? $value : null;
+        }
     }
     if (isset($data->archived)) {
         $fields[] = $data->archived ? 'archived_at = NOW()' : 'archived_at = NULL';
