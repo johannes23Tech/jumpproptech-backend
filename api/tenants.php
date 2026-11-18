@@ -3,6 +3,7 @@ require_once '../config/db.php';
 require_once '../config/security.php';
 require_once '../config/audit.php';
 require_once '../config/permissions.php';
+require_once '../config/leases.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
@@ -132,8 +133,8 @@ if ($method === 'POST') {
         $newUserId = $conn->lastInsertId();
 
         // 3. Create the Tenant Record
-        $query = "INSERT INTO tenants (owner_id, user_id, unit_id, name, phone, email, lease_start, lease_end, deposit, monthly_rent) 
-                  VALUES (:owner_id, :user_id, :unit_id, :name, :phone, :email, :lease_start, :lease_end, :deposit, :monthly_rent)";
+        $query = "INSERT INTO tenants (owner_id, user_id, unit_id, status, name, phone, email, lease_start, lease_end, deposit, monthly_rent) 
+                  VALUES (:owner_id, :user_id, :unit_id, 'active', :name, :phone, :email, :lease_start, :lease_end, :deposit, :monthly_rent)";
         $stmt = $conn->prepare($query);
         $stmt->execute([
             ':owner_id' => $ownerId, 
@@ -148,6 +149,22 @@ if ($method === 'POST') {
             ':monthly_rent' => $monthlyRent
         ]);
         $tenantId = $conn->lastInsertId();
+
+        // Create the first lease version as a draft so management can attach
+        // the approved lease document and record signatures.
+        lease_create_draft(
+            $conn,
+            (int) $tenantId,
+            (int) $unitId,
+            $leaseStart,
+            $leaseEnd,
+            (float) $monthlyRent,
+            (float) $deposit,
+            (int) $user->user_id,
+            null,
+            null,
+            'Created by staff when the tenant was onboarded.'
+        );
 
         // 4. Update Unit status to Occupied
         $updateUnit = $conn->prepare("UPDATE units SET status = 'Occupied' WHERE id = :unit_id");

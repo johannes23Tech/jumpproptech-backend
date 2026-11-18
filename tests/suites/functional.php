@@ -1498,6 +1498,190 @@ function run_functional(Reporter $reporter, int $port): void
         }
     });
 
+    $reporter->test('Phase 2: lease versions, deposits and tenancy lifecycle', function () use ($port, $tokens): void {
+        qa_reset_rate_limits();
+        $suffix = bin2hex(random_bytes(4));
+        $tenantEmail = 'qa.phase2.' . $suffix . '@qa.local';
+        $tenantPassword = 'Phase2!A';
+        $tenantId = 0;
+        $leaseId = 0;
+        $unitId = 2;
+
+        try {
+            $create = qa_auth_request('POST', $port, '/api/tenants.php', $tokens['superadmin'], [
+                'json' => [
+                    'unit_id' => $unitId,
+                    'name' => 'QA Phase2 Tenant',
+                    'phone' => '0712345679',
+                    'email' => $tenantEmail,
+                    'password' => $tenantPassword,
+                    'lease_start' => date('Y-m-d'),
+                    'lease_end' => date('Y-m-d', strtotime('+12 months')),
+                    'deposit' => 5000,
+                    'monthly_rent' => 5000,
+                ],
+            ]);
+            Assert::status(200, $create);
+
+            $tenantId = (int) qa_value('SELECT id FROM tenants WHERE email = ?', [$tenantEmail]);
+            Assert::ok($tenantId > 0, 'tenant was not created');
+            $leaseId = (int) qa_value('SELECT id FROM leases WHERE tenant_id = ?', [$tenantId]);
+            Assert::ok($leaseId > 0, 'onboarding did not create a draft lease');
+            Assert::same(1, (int) qa_value('SELECT version FROM leases WHERE id = ?', [$leaseId]));
+            Assert::same('draft', qa_value('SELECT status FROM leases WHERE id = ?', [$leaseId]));
+
+            $tenancies = qa_auth_request('GET', $port, '/api/tenancies.php', $tokens['superadmin']);
+            Assert::status(200, $tenancies);
+
+            // Finance can read leases but cannot manage them.
+            $financeList = qa_auth_request('GET', $port, '/api/leases.php', $tokens['finance']);
+            Assert::status(200, $financeList);
+            $financeCreate = qa_auth_request('POST', $port, '/api/leases.php', $tokens['finance'], [
+                'json' => ['action' => 'create', 'tenant_id' => $tenantId],
+            ]);
+            Assert::status(403, $financeCreate);
+
+            $document = qa_auth_request('POST', $port, '/api/leases.php', $tokens['superadmin'], [
+                'json' => [
+                    'action' => 'update',
+                    'id' => $leaseId,
+                    'document_url' => 'https://res.cloudinary.com/demo/image/upload/sample.jpg',
+                    'template_reference' => 'Management-approved lease',
+                ],
+            ]);
+            Assert::status(200, $document);
+
+            foreach (['tenant', 'landlord'] as $party) {
+                $sign = qa_auth_request('POST', $port, '/api/leases.php', $tokens['superadmin'], [
+                    'json' => [
+                        'action' => 'sign',
+                        'id' => $leaseId,
+                        'party' => $party,
+                        'signer_name' => 'QA Signer',
+                        'method' => 'in_person',
+                    ],
+                ]);
+                Assert::status(200, $sign);
+            }
+            Assert::same(2, (int) qa_value('SELECT COUNT(*) FROM lease_signatures WHERE lease_id = ?', [$leaseId]));
+
+            $activate = qa_auth_request('POST', $port, '/api/leases.php', $tokens['superadmin'], [
+                'json' => ['action' => 'activate', 'id' => $leaseId],
+            ]);
+            Assert::status(200, $activate);
+            Assert::same('active', qa_value('SELECT status FROM leases WHERE id = ?', [$leaseId]));
+            Assert::same('Occupied', qa_value('SELECT status FROM units WHERE id = ?', [$unitId]));
+
+            // Deposits: received, deduction, and an over-refund guard.
+            $received = qa_auth_request('POST', $port, '/api/deposits.php', $tokens['finance'], [
+                'json' => ['tenant_id' => $tenantId, 'type' => 'received', 'amount' => 5000, 'method' => 'eft', 'reference' => 'QA-EFT'],
+            ]);
+            Assert::status(201, $received);
+            $deduction = qa_auth_request('POST', $port, '/api/deposits.php', $tokens['finance'], [
+                'json' => ['tenant_id' => $tenantId, 'type' => 'deduction', 'amount' => 400, 'notes' => 'QA cleaning'],
+            ]);
+            Assert::status(201, $deduction);
+            Assert::same(4600.0, (float) (qa_functional_json($deduction)['summary']['balance'] ?? 0));
+
+            $overRefund = qa_auth_request('POST', $port, '/api/deposits.php', $tokens['finance'], [
+                'json' => ['tenant_id' => $tenantId, 'type' => 'refund', 'amount' => 99999],
+            ]);
+            Assert::status(409, $overRefund);
+
+            $ledger = qa_auth_request('GET', $port, '/api/deposits.php?tenant_id=' . $tenantId, $tokens['finance']);
+            Assert::status(200, $ledger);
+            Assert::same(2, count((array) (qa_functional_json($ledger)['transactions'] ?? [])));
+
+            // Inspections with a photo, then completion.
+            $inspection = qa_auth_request('POST', $port, '/api/inspections.php', $tokens['superadmin'], [
+                'json' => [
+                    'tenant_id' => $tenantId,
+                    'type' => 'move_in',
+                    'inspected_at' => date('Y-m-d'),
+                    'notes' => 'QA inspection',
+                    'photos' => [['url' => 'https://res.cloudinary.com/demo/image/upload/sample.jpg', 'caption' => 'QA']],
+                ],
+            ]);
+            Assert::status(201, $inspection);
+            $inspectionId = (int) (qa_functional_json($inspection)['id'] ?? 0);
+            Assert::same(1, count((array) (qa_functional_json($inspection)['photos'] ?? [])));
+
+            $complete = qa_auth_request('PATCH', $port, '/api/inspections.php', $tokens['superadmin'], [
+                'json' => ['id' => $inspectionId, 'status' => 'completed'],
+            ]);
+            Assert::status(200, $complete);
+            Assert::same('completed', qa_value('SELECT status FROM inspections WHERE id = ?', [$inspectionId]));
+
+            // Lifecycle: move-in, notice, cancel, renewal, end.
+            $moveIn = qa_auth_request('POST', $port, '/api/tenancies.php', $tokens['superadmin'], [
+                'json' => ['id' => $tenantId, 'action' => 'move_in', 'move_in_date' => date('Y-m-d')],
+            ]);
+            Assert::status(200, $moveIn);
+
+            $notice = qa_auth_request('POST', $port, '/api/tenancies.php', $tokens['superadmin'], [
+                'json' => ['id' => $tenantId, 'action' => 'notice', 'reason' => 'QA notice'],
+            ]);
+            Assert::status(200, $notice);
+            Assert::same('notice', qa_value('SELECT status FROM tenants WHERE id = ?', [$tenantId]));
+
+            $cancel = qa_auth_request('POST', $port, '/api/tenancies.php', $tokens['superadmin'], [
+                'json' => ['id' => $tenantId, 'action' => 'cancel_notice'],
+            ]);
+            Assert::status(200, $cancel);
+
+            $renew = qa_auth_request('POST', $port, '/api/tenancies.php', $tokens['superadmin'], [
+                'json' => [
+                    'id' => $tenantId,
+                    'action' => 'renew',
+                    'start_date' => date('Y-m-d', strtotime('+12 months')),
+                    'end_date' => date('Y-m-d', strtotime('+24 months')),
+                    'monthly_rent' => 5200,
+                    'deposit_required' => 5200,
+                ],
+            ]);
+            Assert::status(201, $renew);
+            Assert::same(2, (int) qa_value('SELECT MAX(version) FROM leases WHERE tenant_id = ?', [$tenantId]));
+
+            // Tenant portal reads the active lease, deposit and own inspection.
+            $tenantLogin = qa_login($port, $tenantEmail, $tenantPassword);
+            Assert::status(200, $tenantLogin);
+            $tenantToken = (string) (qa_functional_json($tenantLogin)['token'] ?? '');
+            $tenantData = qa_http('GET', $port, '/api/tenant_data.php', [
+                'headers' => ['Authorization' => 'Bearer ' . $tenantToken],
+            ]);
+            Assert::status(200, $tenantData);
+            Assert::contains('/sample.jpg', (string) ($tenantData['json']['lease']['document_url'] ?? ''));
+            Assert::same(4600.0, (float) ($tenantData['json']['deposit']['balance'] ?? 0));
+            Assert::same(1, count((array) ($tenantData['json']['inspections'] ?? [])));
+
+            $tenantLeases = qa_http('GET', $port, '/api/leases.php', [
+                'headers' => ['Authorization' => 'Bearer ' . $tenantToken],
+            ]);
+            Assert::status(403, $tenantLeases);
+
+            $end = qa_auth_request('POST', $port, '/api/tenancies.php', $tokens['superadmin'], [
+                'json' => ['id' => $tenantId, 'action' => 'end', 'move_out_date' => date('Y-m-d'), 'reason' => 'QA end'],
+            ]);
+            Assert::status(200, $end);
+            Assert::same('ended', qa_value('SELECT status FROM tenants WHERE id = ?', [$tenantId]));
+            Assert::same('Vacant', qa_value('SELECT status FROM units WHERE id = ?', [$unitId]));
+            Assert::same(0, (int) qa_value("SELECT COUNT(*) FROM leases WHERE tenant_id = ? AND status = 'active'", [$tenantId]));
+        } finally {
+            if ($tenantId > 0) {
+                qa_exec('DELETE FROM inspection_photos WHERE inspection_id IN (SELECT id FROM inspections WHERE tenant_id = ?)', [$tenantId]);
+                qa_exec('DELETE FROM inspections WHERE tenant_id = ?', [$tenantId]);
+                qa_exec('DELETE FROM deposit_transactions WHERE tenant_id = ?', [$tenantId]);
+                qa_exec('DELETE FROM lease_signatures WHERE lease_id IN (SELECT id FROM leases WHERE tenant_id = ?)', [$tenantId]);
+                qa_exec('DELETE FROM leases WHERE tenant_id = ?', [$tenantId]);
+                qa_exec('DELETE FROM rent_records WHERE tenant_id = ?', [$tenantId]);
+                qa_exec('DELETE FROM tenants WHERE id = ?', [$tenantId]);
+            }
+            qa_exec('DELETE FROM users WHERE email = ?', [$tenantEmail]);
+            qa_exec("UPDATE units SET status = 'Vacant' WHERE id = ?", [$unitId]);
+            qa_reset_rate_limits();
+        }
+    });
+
     $reporter->test('Authentication events are written to the append-only audit log', function (): void {
         foreach ([
             'auth.login.success',

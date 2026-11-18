@@ -306,7 +306,7 @@ Support:
 
 Lease templates and legal wording must be supplied/approved by management and reviewed by a qualified South African legal professional. Do not invent contract clauses.
 
-**Current implementation note:** a `leases` table exists but is effectively unused. Lease generation is an ad-hoc PDF. There is no versioning, signature record, deposit ledger or inspection entity. These are additive migrations, not replacements of the tenant record.
+**Current implementation note:** Phase 2 implements the versioned `leases`, `lease_signatures`, `deposit_transactions`, `inspections` and `inspection_photos` tables plus the tenancy lifecycle fields. Ad-hoc PDF generation is retired; management must supply the approved lease document. A formal e-signature provider is still not integrated.
 
 ---
 
@@ -661,6 +661,21 @@ These are not permission to invent values. Ask the owner or authorised business 
 
 **Deployment note:** run the Phase 1 migration before deploying this API. Both migrations are additive and safe to re-run. Run Phase 0 first.
 
+### 24.1c Phase 2 applied (18 November 2026)
+
+- `migrations/2026-11-18_phase2_leases_deposits.sql` adds tenancy status/move-in/move-out/termination fields to `tenants`, the versioned `leases` table, `lease_signatures`, the append-only `deposit_transactions` ledger, `inspections` and `inspection_photos`.
+- A legacy `leases` table without a `version` column is renamed to `leases_legacy` once, preserving any historical rows. The new API never reads the legacy table.
+- `api/tenants.php` and application approval now create lease version 1 as a draft so management can attach the approved document and record signatures.
+- `api/leases.php` manages versions: edit a draft, record tenant/landlord signatures, activate (which supersedes the previous active version and applies the term dates, rent and deposit), or delete an unsigned draft. Activation requires an uploaded document or at least one recorded signature.
+- `api/deposits.php` records received, deduction, refund and adjustment movements. Deductions and refunds cannot exceed the held balance. Every movement is audited.
+- `api/inspections.php` records move-in, move-out and routine inspections with Cloudinary photos.
+- `api/tenancies.php` drives the lifecycle: move-in, notice, cancel notice, renewal (creates the next draft lease version) and termination (marks the active lease terminated and the unit vacant).
+- `api/generate_lease.php` is retired with HTTP 410. The platform no longer generates clause wording; lease templates and legal wording must be supplied and approved by management.
+- The tenant portal now returns the current lease document and signature status, the deposit position and ledger, and the tenant's own inspections.
+- Frontend: consolidated `/tenancy` staff workspace (tenancies, leases, deposits, inspections) and a data-backed tenant Lease & Docs page.
+
+**Deployment note:** run the Phase 2 migration before deploying this API. The migration is additive and safe to re-run, and preserves a legacy `leases` table.
+
 ### 24.2 Drift to retire
 
 | Drift | Location | Action |
@@ -680,7 +695,7 @@ These are not permission to invent values. Ask the owner or authorised business 
 - ~~QR onboarding tokens and tenant applications.~~ (Phase 1)
 - ~~Application review/approval workflow.~~ (Phase 1)
 - ~~Tenant portal linked to approved applications.~~ (Phase 1 foundation)
-- Lease versions, e-signature records, deposit ledger, inspections.
+- ~~Lease versions, signature records, deposit ledger, inspections.~~ (Phase 2)
 - Contractual due dates, arrears/aging, late-penalty approval.
 - Cash/EFT payment records with proof, verification and rejection states.
 - Database-backed sequential receipts and reversal workflow.

@@ -152,8 +152,8 @@ $qa->exec("INSERT INTO contractors (id, name, trade, phone, owner_id) VALUES
 $qa->exec("INSERT INTO expenses (id, owner_id, property_id, category, amount, expense_date, description) VALUES
     (1, 2, 1, 'Repairs', 1250.00, CURDATE(), 'Seeded expense')");
 
-$qa->exec("INSERT INTO leases (id, tenant_id, unit_id, lease_start, lease_end, deposit_amount, status) VALUES
-    (1, 5, 1, '{$leaseStart}', '{$leaseEnd}', 5000.00, 'Active')");
+// The legacy `leases` table is preserved by the Phase 2 migration as
+// `leases_legacy`; a versioned lease fixture is seeded after that migration.
 
 // Apply the Phase 0 account-model migration after seeding so the QA schema
 // matches the deployed API. The backfill then maps the seeded legacy roles onto
@@ -178,6 +178,22 @@ foreach (array_filter(array_map('trim', explode(';', $phase1Sql))) as $statement
     $qa->exec($statement);
 }
 out('Applied Phase 1 property/tenant-core migration to the QA schema.');
+
+// Apply the Phase 2 tenancy/lease/deposit migration after Phase 1.
+$phase2Path = __DIR__ . '/../migrations/2026-11-18_phase2_leases_deposits.sql';
+if (!is_file($phase2Path)) {
+    fail('Phase 2 migration not found: ' . $phase2Path);
+}
+$phase2Sql = preg_replace('/^\s*--.*$/m', '', (string) file_get_contents($phase2Path));
+foreach (array_filter(array_map('trim', explode(';', $phase2Sql))) as $statement) {
+    $qa->exec($statement);
+}
+out('Applied Phase 2 tenancy/lease/deposit migration to the QA schema.');
+
+// Seed an active lease version for the main QA tenant after the new table exists.
+$qa->exec("INSERT INTO leases
+    (id, tenant_id, unit_id, version, status, start_date, end_date, monthly_rent, deposit_required, activated_at)
+    VALUES (1, 5, 1, 1, 'active', '{$leaseStart}', '{$leaseEnd}', 5000.00, 5000.00, NOW())");
 
 // Give the finance fixture the finance/accountant staff role. Legacy roles
 // alone cannot express every approved staff role.

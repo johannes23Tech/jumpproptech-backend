@@ -2,6 +2,7 @@
 require_once '../config/db.php';
 require_once '../config/security.php';
 require_once '../config/tenant_profile.php';
+require_once '../config/leases.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
@@ -54,10 +55,62 @@ if ($method === 'GET') {
     $maintStmt->execute();
     $maintenance = $maintStmt->fetchAll(PDO::FETCH_ASSOC);
 
+    // Current lease version. Only the tenant's own document and signatures are
+    // exposed; internal notes and staff identifiers are not.
+    $lease = lease_current($conn, (int) $tenant['id']);
+    $leasePayload = null;
+    if ($lease !== null) {
+        $leasePayload = [
+            'id' => (int) $lease['id'],
+            'version' => (int) $lease['version'],
+            'status' => $lease['status'],
+            'title' => $lease['title'],
+            'document_url' => $lease['document_url'],
+            'start_date' => $lease['start_date'],
+            'end_date' => $lease['end_date'],
+            'monthly_rent' => $lease['monthly_rent'],
+            'deposit_required' => $lease['deposit_required'],
+            'activated_at' => $lease['activated_at'],
+            'signatures' => array_map(
+                static fn (array $signature): array => [
+                    'party' => $signature['party'],
+                    'signer_name' => $signature['signer_name'],
+                    'method' => $signature['method'],
+                    'signed_at' => $signature['signed_at'],
+                ],
+                lease_signatures($conn, (int) $lease['id'])
+            ),
+        ];
+    }
+
+    // Deposit position and append-only ledger.
+    $deposit = deposit_summary($conn, (int) $tenant['id']);
+    $deposit['transactions'] = deposit_transactions($conn, (int) $tenant['id']);
+
+    // The tenant's own inspections and photos.
+    $inspectionStmt = $conn->prepare(
+        'SELECT id, tenant_id, type, status, inspected_at, notes, completed_at, created_at
+         FROM inspections WHERE tenant_id = :tenant_id ORDER BY id DESC'
+    );
+    $inspectionStmt->execute([':tenant_id' => $tenant['id']]);
+    $inspections = $inspectionStmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($inspections as &$inspection) {
+        $photoStmt = $conn->prepare(
+            'SELECT id, file_url AS url, caption, created_at
+             FROM inspection_photos WHERE inspection_id = :id ORDER BY id ASC'
+        );
+        $photoStmt->execute([':id' => $inspection['id']]);
+        $inspection['photos'] = $photoStmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    unset($inspection);
+
     echo json_encode([
         "tenant" => $tenant,
         "rent" => $rent,
-        "maintenance" => $maintenance
+        "maintenance" => $maintenance,
+        "lease" => $leasePayload,
+        "deposit" => $deposit,
+        "inspections" => $inspections
     ]);
     exit();
 }

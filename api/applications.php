@@ -14,6 +14,7 @@ require_once '../config/db.php';
 require_once '../config/security.php';
 require_once '../config/audit.php';
 require_once '../config/permissions.php';
+require_once '../config/leases.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
@@ -212,10 +213,10 @@ if ($method === 'POST') {
 
         $tenantInsert = $conn->prepare(
             "INSERT INTO tenants
-                (owner_id, user_id, unit_id, name, phone, email, lease_start, lease_end,
+                (owner_id, user_id, unit_id, status, name, phone, email, lease_start, lease_end,
                  deposit, monthly_rent, id_number, emergency_contact_name, emergency_contact_phone, occupants)
              VALUES
-                (:owner_id, :user_id, :unit_id, :name, :phone, :email, :lease_start, :lease_end,
+                (:owner_id, :user_id, :unit_id, 'active', :name, :phone, :email, :lease_start, :lease_end,
                  :deposit, :monthly_rent, :id_number, :emergency_name, :emergency_phone, :occupants)"
         );
         $tenantInsert->execute([
@@ -235,6 +236,22 @@ if ($method === 'POST') {
             ':occupants' => (int) $application['occupants'],
         ]);
         $newTenantId = (int) $conn->lastInsertId();
+
+        // Create the first lease version as a draft. Management uploads the
+        // approved lease document and records signatures before activating it.
+        lease_create_draft(
+            $conn,
+            $newTenantId,
+            (int) $application['unit_id'],
+            $leaseStart,
+            $leaseEnd,
+            (float) $monthlyRent,
+            (float) $deposit,
+            (int) $user->user_id,
+            null,
+            null,
+            'Created automatically when the application was approved.'
+        );
 
         $conn->prepare("UPDATE units SET status = 'Occupied' WHERE id = :unit_id")
             ->execute([':unit_id' => $application['unit_id']]);

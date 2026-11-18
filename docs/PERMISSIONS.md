@@ -1,8 +1,8 @@
 # JUMP PROPTECH — Roles and Permissions
 
-**Version:** Phase 1 baseline
+**Version:** Phase 2 baseline
 **Updated:** 18 November 2026
-**Status:** Implemented in `config/permissions.php`. Phase 1 covers applications/QR, properties/units and tenant portal reads.
+**Status:** Implemented in `config/permissions.php`. Phase 2 covers tenancy lifecycle, lease versions/signatures, deposits and inspections.
 
 This matrix is the server-side contract. Hiding a button is not authorization. Every protected endpoint must call `authenticate()` and then either `permission_require()` or an explicit, documented role check.
 
@@ -87,11 +87,22 @@ New staff accounts are created through `POST /api/staff.php` with an explicit `s
 | `GET/POST /api/applications.php` | `applications.view` | `applications.review` | Approval creates tenant + tenancy atomically |
 | `GET/POST /api/public/onboarding.php` | public | public | Rate-limited, unit-scoped, single-use QR token |
 
+## Phase 2 endpoint coverage
+
+| Endpoint | Read permission | Write permission | Notes |
+| --- | --- | --- | --- |
+| `GET/POST /api/tenancies.php` | `tenants.view` | `tenants.manage` | Move-in, notice, renewal and termination; ending vacates the unit |
+| `GET/POST /api/leases.php` | `leases.view` | `leases.manage` | Versioned lease records; management-supplied documents only |
+| `GET/POST /api/deposits.php` | `deposits.view` | `deposits.manage` | Append-only ledger; deductions/refunds cannot exceed the held balance |
+| `GET/POST/PATCH /api/inspections.php` | `leases.view` | `leases.manage` | Move-in/out and routine inspections with Cloudinary photos |
+| `GET /api/generate_lease.php` | `leases.view` | — | Retired (410): the platform no longer generates lease clauses |
+
 ## Migration checklist
 
 1. Run `migrations/2026-11-17_phase0_roles_and_company.sql`.
 2. Run `migrations/2026-11-18_phase1_property_tenant_core.sql`.
-3. Verify backfill:
+3. Run `migrations/2026-11-18_phase2_leases_deposits.sql`. A legacy `leases` table without a `version` column is preserved as `leases_legacy`.
+4. Verify backfill:
    ```sql
    SELECT role, staff_role, account_type, COUNT(*)
    FROM users GROUP BY role, staff_role, account_type;

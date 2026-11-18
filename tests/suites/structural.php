@@ -297,6 +297,11 @@ function run_structural(Reporter $reporter): void
             Assert::contains($token, $phase1, "phase 1 migration missing {$token}");
         }
 
+        $phase2 = qa_source('migrations/2026-11-18_phase2_leases_deposits.sql');
+        foreach (['lease_signatures', 'deposit_transactions', 'inspections', 'inspection_photos', 'leases_legacy', 'version'] as $token) {
+            Assert::contains($token, $phase2, "phase 2 migration missing {$token}");
+        }
+
         $permissions = qa_source('config/permissions.php');
         foreach (['super_administrator', 'finance_accountant', 'maintenance_technician', 'auditor', 'permission_require'] as $token) {
             Assert::contains($token, $permissions, "permission framework missing {$token}");
@@ -306,6 +311,11 @@ function run_structural(Reporter $reporter): void
         foreach (['onboarding_generate_token', 'onboarding_token_hash', 'hash(\'sha256\'', 'ONBOARDING_TOKEN_MAX_DAYS'] as $token) {
             Assert::contains($token, $onboarding, "onboarding helper missing {$token}");
         }
+
+        $leaseHelpers = qa_source('config/leases.php');
+        foreach (['lease_create_draft', 'lease_current', 'deposit_summary', 'deposit_transactions'] as $token) {
+            Assert::contains($token, $leaseHelpers, "lease helper missing {$token}");
+        }
     });
 
     $reporter->section('Structural — live schema');
@@ -313,7 +323,7 @@ function run_structural(Reporter $reporter): void
     $reporter->test('Disposable QA schema has every table the API uses', function (): void {
         $tables = qa_query('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()');
         $names = array_column($tables, 'TABLE_NAME');
-        foreach (['users', 'properties', 'units', 'tenants', 'rent_records', 'expenses', 'maintenance', 'messages', 'contractors', 'leases', 'password_resets', 'rate_limits', 'revoked_tokens', 'audit_logs', 'companies', 'buildings', 'onboarding_tokens', 'tenant_applications', 'application_documents'] as $table) {
+        foreach (['users', 'properties', 'units', 'tenants', 'rent_records', 'expenses', 'maintenance', 'messages', 'contractors', 'leases', 'password_resets', 'rate_limits', 'revoked_tokens', 'audit_logs', 'companies', 'buildings', 'onboarding_tokens', 'tenant_applications', 'application_documents', 'lease_signatures', 'deposit_transactions', 'inspections', 'inspection_photos'] as $table) {
             Assert::ok(in_array($table, $names, true), "missing table: {$table}");
         }
     });
@@ -351,6 +361,48 @@ function run_structural(Reporter $reporter): void
         );
         foreach (['status', 'password_hash', 'rejection_reason', 'reviewed_by', 'tenant_id', 'user_id'] as $column) {
             Assert::ok(in_array($column, $applicationColumns, true), "tenant_applications missing column: {$column}");
+        }
+    });
+
+    $reporter->test('tenancy, lease and deposit schema is present', function (): void {
+        $tenantColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "tenants"'),
+            'COLUMN_NAME'
+        );
+        foreach (['status', 'move_in_date', 'move_out_date', 'terminated_at', 'termination_reason'] as $column) {
+            Assert::ok(in_array($column, $tenantColumns, true), "tenants missing column: {$column}");
+        }
+
+        $leaseColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "leases"'),
+            'COLUMN_NAME'
+        );
+        foreach (['tenant_id', 'unit_id', 'version', 'status', 'document_url', 'start_date', 'end_date', 'monthly_rent', 'deposit_required', 'supersedes_id'] as $column) {
+            Assert::ok(in_array($column, $leaseColumns, true), "leases missing column: {$column}");
+        }
+
+        $signatureColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "lease_signatures"'),
+            'COLUMN_NAME'
+        );
+        foreach (['lease_id', 'party', 'signer_name', 'method', 'signed_at'] as $column) {
+            Assert::ok(in_array($column, $signatureColumns, true), "lease_signatures missing column: {$column}");
+        }
+
+        $depositColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "deposit_transactions"'),
+            'COLUMN_NAME'
+        );
+        foreach (['tenant_id', 'type', 'amount', 'method', 'reference', 'recorded_by'] as $column) {
+            Assert::ok(in_array($column, $depositColumns, true), "deposit_transactions missing column: {$column}");
+        }
+
+        $inspectionColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "inspections"'),
+            'COLUMN_NAME'
+        );
+        foreach (['tenant_id', 'unit_id', 'type', 'status', 'inspected_at', 'notes'] as $column) {
+            Assert::ok(in_array($column, $inspectionColumns, true), "inspections missing column: {$column}");
         }
     });
 
