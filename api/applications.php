@@ -15,6 +15,7 @@ require_once '../config/security.php';
 require_once '../config/audit.php';
 require_once '../config/permissions.php';
 require_once '../config/leases.php';
+require_once '../config/rent.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
@@ -239,7 +240,7 @@ if ($method === 'POST') {
 
         // Create the first lease version as a draft. Management uploads the
         // approved lease document and records signatures before activating it.
-        lease_create_draft(
+        $leaseId = lease_create_draft(
             $conn,
             $newTenantId,
             (int) $application['unit_id'],
@@ -257,12 +258,14 @@ if ($method === 'POST') {
             ->execute([':unit_id' => $application['unit_id']]);
 
         $conn->prepare(
-            "INSERT INTO rent_records (tenant_id, unit_id, month_for, amount, status)
-             VALUES (:tenant_id, :unit_id, :month, :amount, 'Pending')"
+            "INSERT INTO rent_records (tenant_id, unit_id, lease_id, month_for, due_date, amount, status)
+             VALUES (:tenant_id, :unit_id, :lease_id, :month, :due_date, :amount, 'Pending')"
         )->execute([
             ':tenant_id' => $newTenantId,
             ':unit_id' => $application['unit_id'],
+            ':lease_id' => $leaseId,
             ':month' => date('Y-m-01'),
+            ':due_date' => rent_due_date_for(date('Y-m-01'), 1),
             ':amount' => $monthlyRent,
         ]);
 

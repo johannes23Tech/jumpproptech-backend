@@ -3,6 +3,7 @@ require_once '../config/db.php';
 require_once '../config/security.php';
 require_once '../config/tenant_profile.php';
 require_once '../config/leases.php';
+require_once '../config/rent.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
@@ -47,6 +48,35 @@ if ($method === 'GET') {
     $rentStmt->bindParam(':tenant_id', $tenant['id']);
     $rentStmt->execute();
     $rent = $rentStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Attach the tenant-visible payment state and proof metadata. Staff ids and
+    // internal verification notes are never exposed.
+    $paymentStmt = $conn->prepare(
+        "SELECT id, method, status, proof_url, reference, submitted_at, rejection_reason
+         FROM rent_payments
+         WHERE rent_record_id = :rent_id
+         ORDER BY id DESC LIMIT 5"
+    );
+    foreach ($rent as &$rentRow) {
+        $rentRow['effective_status'] = rent_effective_status($rentRow);
+        $paymentStmt->execute([':rent_id' => (int) $rentRow['id']]);
+        $rentRow['payments'] = $paymentStmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    unset($rentRow);
+
+    // Issued receipts for the tenant (voided receipts stay visible for audit).
+    $receiptStmt = $conn->prepare(
+        "SELECT rc.id, rc.receipt_number, rc.amount, rc.method, rc.status, rc.issued_at,
+                rc.voided_at, rc.void_reason, r.month_for
+         FROM receipts rc
+         JOIN rent_records r ON rc.rent_record_id = r.id
+         WHERE rc.tenant_id = :tenant_id
+         ORDER BY rc.id DESC LIMIT 100"
+    );
+    $receiptStmt->execute([':tenant_id' => $tenant['id']]);
+    $receipts = $receiptStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $arrears = rent_arrears_for($conn, (int) $tenant['id']);
 
     // Fetch Maintenance
     $maintQuery = "SELECT * FROM maintenance WHERE tenant_id = :tenant_id ORDER BY id DESC";
@@ -110,7 +140,9 @@ if ($method === 'GET') {
         "maintenance" => $maintenance,
         "lease" => $leasePayload,
         "deposit" => $deposit,
-        "inspections" => $inspections
+        "inspections" => $inspections,
+        "receipts" => $receipts,
+        "arrears" => $arrears
     ]);
     exit();
 }

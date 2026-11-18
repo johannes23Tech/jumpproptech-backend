@@ -302,6 +302,16 @@ function run_structural(Reporter $reporter): void
             Assert::contains($token, $phase2, "phase 2 migration missing {$token}");
         }
 
+        $phase3 = qa_source('migrations/2026-11-18_phase3_rent_cash_eft.sql');
+        foreach (['rent_payments', 'receipts', 'receipt_sequences', 'due_date', 'rent_due_day', 'PendingVerification', 'Reversed'] as $token) {
+            Assert::contains($token, $phase3, "phase 3 migration missing {$token}");
+        }
+
+        $rentHelpers = qa_source('config/rent.php');
+        foreach (['rent_due_date_for', 'rent_generate_obligations', 'rent_next_receipt_number', 'rent_issue_receipt', 'rent_effective_status', 'rent_arrears_for'] as $token) {
+            Assert::contains($token, $rentHelpers, "rent helper missing {$token}");
+        }
+
         $permissions = qa_source('config/permissions.php');
         foreach (['super_administrator', 'finance_accountant', 'maintenance_technician', 'auditor', 'permission_require'] as $token) {
             Assert::contains($token, $permissions, "permission framework missing {$token}");
@@ -323,7 +333,7 @@ function run_structural(Reporter $reporter): void
     $reporter->test('Disposable QA schema has every table the API uses', function (): void {
         $tables = qa_query('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()');
         $names = array_column($tables, 'TABLE_NAME');
-        foreach (['users', 'properties', 'units', 'tenants', 'rent_records', 'expenses', 'maintenance', 'messages', 'contractors', 'leases', 'password_resets', 'rate_limits', 'revoked_tokens', 'audit_logs', 'companies', 'buildings', 'onboarding_tokens', 'tenant_applications', 'application_documents', 'lease_signatures', 'deposit_transactions', 'inspections', 'inspection_photos'] as $table) {
+        foreach (['users', 'properties', 'units', 'tenants', 'rent_records', 'expenses', 'maintenance', 'messages', 'contractors', 'leases', 'password_resets', 'rate_limits', 'revoked_tokens', 'audit_logs', 'companies', 'buildings', 'onboarding_tokens', 'tenant_applications', 'application_documents', 'lease_signatures', 'deposit_transactions', 'inspections', 'inspection_photos', 'rent_payments', 'receipts', 'receipt_sequences'] as $table) {
             Assert::ok(in_array($table, $names, true), "missing table: {$table}");
         }
     });
@@ -403,6 +413,61 @@ function run_structural(Reporter $reporter): void
         );
         foreach (['tenant_id', 'unit_id', 'type', 'status', 'inspected_at', 'notes'] as $column) {
             Assert::ok(in_array($column, $inspectionColumns, true), "inspections missing column: {$column}");
+        }
+    });
+
+    $reporter->test('rent, payment and receipt schema is present', function (): void {
+        $tenantColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "tenants"'),
+            'COLUMN_NAME'
+        );
+        Assert::ok(in_array('rent_due_day', $tenantColumns, true), 'tenants missing column: rent_due_day');
+
+        $rentColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "rent_records"'),
+            'COLUMN_NAME'
+        );
+        foreach (['due_date', 'lease_id', 'updated_at'] as $column) {
+            Assert::ok(in_array($column, $rentColumns, true), "rent_records missing column: {$column}");
+        }
+
+        $statusColumn = qa_query(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'rent_records' AND COLUMN_NAME = 'status'"
+        );
+        $statusType = (string) ($statusColumn[0]['COLUMN_TYPE'] ?? '');
+        foreach (['Pending', 'Overdue', 'Submitted', 'PendingVerification', 'Paid', 'Rejected', 'Reversed'] as $status) {
+            Assert::contains($status, $statusType, "rent_records.status missing value: {$status}");
+        }
+
+        $paymentColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "rent_payments"'),
+            'COLUMN_NAME'
+        );
+        foreach (['rent_record_id', 'tenant_id', 'method', 'amount', 'status', 'proof_url', 'reference', 'verified_by', 'rejection_reason', 'reversed_by', 'receipt_id'] as $column) {
+            Assert::ok(in_array($column, $paymentColumns, true), "rent_payments missing column: {$column}");
+        }
+
+        $receiptColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "receipts"'),
+            'COLUMN_NAME'
+        );
+        foreach (['receipt_number', 'rent_record_id', 'payment_id', 'tenant_id', 'amount', 'method', 'status', 'issued_by', 'voided_by', 'void_reason'] as $column) {
+            Assert::ok(in_array($column, $receiptColumns, true), "receipts missing column: {$column}");
+        }
+
+        $numberIndexes = array_column(
+            qa_query('SELECT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "receipts" AND COLUMN_NAME = "receipt_number"'),
+            'INDEX_NAME'
+        );
+        Assert::ok(in_array('uq_receipts_number', $numberIndexes, true), 'receipt numbers must be unique');
+
+        $sequenceColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "receipt_sequences"'),
+            'COLUMN_NAME'
+        );
+        foreach (['year', 'last_number'] as $column) {
+            Assert::ok(in_array($column, $sequenceColumns, true), "receipt_sequences missing column: {$column}");
         }
     });
 

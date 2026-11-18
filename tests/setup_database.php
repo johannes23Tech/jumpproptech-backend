@@ -190,10 +190,32 @@ foreach (array_filter(array_map('trim', explode(';', $phase2Sql))) as $statement
 }
 out('Applied Phase 2 tenancy/lease/deposit migration to the QA schema.');
 
+// Apply the Phase 3 rent/cash/EFT migration after Phase 2.
+$phase3Path = __DIR__ . '/../migrations/2026-11-18_phase3_rent_cash_eft.sql';
+if (!is_file($phase3Path)) {
+    fail('Phase 3 migration not found: ' . $phase3Path);
+}
+$phase3Sql = preg_replace('/^\s*--.*$/m', '', (string) file_get_contents($phase3Path));
+foreach (array_filter(array_map('trim', explode(';', $phase3Sql))) as $statement) {
+    $qa->exec($statement);
+}
+out('Applied Phase 3 rent/cash/EFT migration to the QA schema.');
+
 // Seed an active lease version for the main QA tenant after the new table exists.
 $qa->exec("INSERT INTO leases
     (id, tenant_id, unit_id, version, status, start_date, end_date, monthly_rent, deposit_required, activated_at)
     VALUES (1, 5, 1, 1, 'active', '{$leaseStart}', '{$leaseEnd}', 5000.00, 5000.00, NOW())");
+
+// Contractual due days and per-obligation due dates for the Phase 3 fixtures.
+$qa->exec('UPDATE tenants SET rent_due_day = 1 WHERE id IN (5, 6)');
+$qa->exec('UPDATE rent_records SET lease_id = 1 WHERE tenant_id = 5');
+$qa->exec("UPDATE rent_records SET due_date = month_for WHERE due_date IS NULL");
+
+// One issued receipt matching the seeded paid record, plus its sequence row.
+$qa->exec("INSERT INTO receipts
+    (id, receipt_number, rent_record_id, tenant_id, amount, method, status, issued_by, issued_at)
+    VALUES (1, 'RCP-SEED-0001', 3, 5, 5000.00, 'eft', 'issued', 15, '{$prevMonth}')");
+$qa->exec('INSERT INTO receipt_sequences (year, last_number) VALUES (' . (int) $today->format('Y') . ', 1)');
 
 // Give the finance fixture the finance/accountant staff role. Legacy roles
 // alone cannot express every approved staff role.

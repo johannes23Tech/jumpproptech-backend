@@ -564,7 +564,7 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::status(403, $tenant);
     });
 
-    $reporter->test('Rent records are company-wide, permission-gated and single-use', function () use ($port): void {
+    $reporter->test('Rent register is company-wide and cash recording is permission-gated', function () use ($port): void {
         $response = qa_functional_request($port, 'GET', '/api/rent.php', 'landlord.a');
         Assert::status(200, $response);
         $rows = qa_functional_json($response);
@@ -572,44 +572,163 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::ok($tenantIds !== [], 'staff member sees no rent records');
         // Company-wide staff scope: tenant B's record is visible too.
         Assert::ok(in_array(6, $tenantIds, true), 'staff cannot see the company rent register');
+        Assert::ok(isset($rows[0]['effective_status']), 'rent register omits the derived status');
 
-        // A property manager may view payments but may not record them.
+        // A property manager may view payments but may not record cash.
         $denied = qa_functional_request($port, 'POST', '/api/rent.php', 'landlord.a', [
-            'json' => ['id' => 1, 'method' => 'EFT'],
+            'json' => ['action' => 'record_cash', 'id' => 1],
         ]);
         Assert::status(403, $denied);
+        Assert::same('Pending', qa_value('SELECT status FROM rent_records WHERE id = 1'));
 
         $pay = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
-            'json' => ['id' => 1, 'method' => 'EFT'],
+            'json' => ['action' => 'record_cash', 'id' => 1],
         ]);
         Assert::status(200, $pay);
-        $receipt = (string) (qa_functional_json($pay)['receipt_number'] ?? '');
-        Assert::matches('/^RCP-\d{4}-[A-F0-9]{5}$/', $receipt);
+        $firstReceipt = (string) (qa_functional_json($pay)['receipt_number'] ?? '');
+        Assert::matches('/^RCP-\d{4}-\d{6}$/', $firstReceipt);
 
         $row = qa_query('SELECT * FROM rent_records WHERE id = 1');
         Assert::same('Paid', $row[0]['status']);
-        Assert::same($receipt, $row[0]['receipt_number']);
+        Assert::same('Cash', $row[0]['payment_method']);
+        Assert::same($firstReceipt, $row[0]['receipt_number']);
+        Assert::same(
+            $firstReceipt,
+            qa_value('SELECT receipt_number FROM receipts WHERE rent_record_id = 1 AND status = "issued"')
+        );
         Assert::same(1, (int) qa_value("SELECT COUNT(*) FROM audit_logs WHERE action = 'rent.payment_recorded' AND entity_id = 1"));
 
-        $again = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', ['json' => ['id' => 1]]);
+        $again = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
+            'json' => ['action' => 'record_cash', 'id' => 1],
+        ]);
         Assert::status(409, $again);
 
-        // Finance staff cover the whole company, including another property.
-        $companyWide = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', ['json' => ['id' => 2]]);
+        // Receipts are sequential, never random.
+        $companyWide = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
+            'json' => ['action' => 'record_cash', 'id' => 2],
+        ]);
         Assert::status(200, $companyWide);
+        $secondReceipt = (string) (qa_functional_json($companyWide)['receipt_number'] ?? '');
+        Assert::matches('/^RCP-\d{4}-\d{6}$/', $secondReceipt);
+        Assert::same(
+            ((int) substr($firstReceipt, -6)) + 1,
+            (int) substr($secondReceipt, -6),
+            'receipt numbers must be sequential'
+        );
 
-        $missing = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', ['json' => []]);
+        $missing = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', ['json' => ['action' => 'record_cash']]);
         Assert::status(400, $missing);
 
         $invalid = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', ['json' => ['id' => 'nope']]);
         Assert::status(400, $invalid);
     });
 
+    $reporter->test('EFT proof is submitted by the tenant and verified or rejected by staff', function () use ($port): void {
+        qa_exec(
+            "INSERT INTO rent_records (id, tenant_id, unit_id, month_for, due_date, amount, status) VALUES
+             (102, 5, 1, ?, ?, 5000.00, 'Pending'), (103, 6, 3, ?, ?, 7000.00, 'Pending')",
+            [date('Y-m-01'), date('Y-m-05'), date('Y-m-01'), date('Y-m-05')]
+        );
+
+        $proofUrl = 'https://res.cloudinary.com/demo/image/upload/proof.pdf';
+
+        // A tenant cannot submit proof for another tenant's rent.
+        $foreign = qa_functional_request($port, 'POST', '/api/rent.php', 'tenant.a', [
+            'json' => ['action' => 'submit_eft', 'id' => 103, 'proof_url' => $proofUrl],
+        ]);
+        Assert::status(403, $foreign);
+
+        // Proof must be an uploaded Cloudinary file, not free text.
+        $badProof = qa_functional_request($port, 'POST', '/api/rent.php', 'tenant.a', [
+            'json' => ['action' => 'submit_eft', 'id' => 102, 'proof_url' => 'not-a-url'],
+        ]);
+        Assert::status(400, $badProof);
+
+        $submit = qa_functional_request($port, 'POST', '/api/rent.php', 'tenant.a', [
+            'json' => ['action' => 'submit_eft', 'id' => 102, 'proof_url' => $proofUrl, 'reference' => 'RENT TEST'],
+        ]);
+        Assert::status(201, $submit);
+        Assert::same('Submitted', qa_value('SELECT status FROM rent_records WHERE id = 102'));
+        Assert::same('submitted', qa_value('SELECT status FROM rent_payments WHERE rent_record_id = 102'));
+
+        // Submitting proof is not proof of payment: no receipt exists yet.
+        Assert::same(0, (int) qa_value('SELECT COUNT(*) FROM receipts WHERE rent_record_id = 102'));
+
+        $verify = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
+            'json' => ['action' => 'verify_eft', 'id' => 102],
+        ]);
+        Assert::status(200, $verify);
+        $receipt = (string) (qa_functional_json($verify)['receipt_number'] ?? '');
+        Assert::matches('/^RCP-\d{4}-\d{6}$/', $receipt);
+        Assert::same('Paid', qa_value('SELECT status FROM rent_records WHERE id = 102'));
+        Assert::same('verified', qa_value('SELECT status FROM rent_payments WHERE rent_record_id = 102'));
+        Assert::same($receipt, qa_value('SELECT receipt_number FROM receipts WHERE rent_record_id = 102'));
+
+        // Verifying without a pending proof is rejected.
+        $noProof = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
+            'json' => ['action' => 'verify_eft', 'id' => 103],
+        ]);
+        Assert::status(409, $noProof);
+
+        // A rejected proof requires a reason and can be resubmitted.
+        $submitOther = qa_functional_request($port, 'POST', '/api/rent.php', 'tenant.b', [
+            'json' => ['action' => 'submit_eft', 'id' => 103, 'proof_url' => $proofUrl],
+        ]);
+        Assert::status(201, $submitOther);
+
+        $noReason = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
+            'json' => ['action' => 'reject_eft', 'id' => 103],
+        ]);
+        Assert::status(400, $noReason);
+
+        $reject = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
+            'json' => ['action' => 'reject_eft', 'id' => 103, 'reason' => 'No matching bank deposit'],
+        ]);
+        Assert::status(200, $reject);
+        Assert::same('Rejected', qa_value('SELECT status FROM rent_records WHERE id = 103'));
+        Assert::same('rejected', qa_value('SELECT status FROM rent_payments WHERE rent_record_id = 103'));
+        Assert::same(
+            'No matching bank deposit',
+            qa_value('SELECT rejection_reason FROM rent_payments WHERE rent_record_id = 103')
+        );
+        Assert::same(0, (int) qa_value('SELECT COUNT(*) FROM receipts WHERE rent_record_id = 103'));
+    });
+
+    $reporter->test('Reversing a payment keeps the record and voids the receipt without renumbering', function () use ($port): void {
+        $before = (string) qa_value('SELECT receipt_number FROM receipts WHERE rent_record_id = 102');
+
+        $noReason = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
+            'json' => ['action' => 'reverse', 'id' => 102],
+        ]);
+        Assert::status(400, $noReason);
+
+        $reverse = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
+            'json' => ['action' => 'reverse', 'id' => 102, 'reason' => 'Bank reversed the transfer'],
+        ]);
+        Assert::status(200, $reverse);
+
+        Assert::same('Reversed', qa_value('SELECT status FROM rent_records WHERE id = 102'));
+        Assert::same('reversed', qa_value('SELECT status FROM rent_payments WHERE rent_record_id = 102 AND method = "eft"'));
+        Assert::same('voided', qa_value('SELECT status FROM receipts WHERE rent_record_id = 102'));
+        Assert::same('voided', qa_value('SELECT status FROM receipts WHERE receipt_number = ?', [$before]));
+        Assert::same(
+            $before,
+            qa_value('SELECT receipt_number FROM receipts WHERE rent_record_id = 102'),
+            'the receipt number must never be renumbered'
+        );
+        Assert::same(1, (int) qa_value('SELECT COUNT(*) FROM receipts WHERE rent_record_id = 102'));
+
+        $again = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
+            'json' => ['action' => 'reverse', 'id' => 102, 'reason' => 'Second attempt'],
+        ]);
+        Assert::status(409, $again);
+    });
+
     $reporter->test('Tenants cannot mark rent as paid themselves', function () use ($port): void {
         qa_exec(
-            "INSERT INTO rent_records (id, tenant_id, unit_id, month_for, amount, status) VALUES
-             (100, 5, 1, ?, 5000.00, 'Pending'), (101, 6, 3, ?, 7000.00, 'Pending')",
-            [date('Y-m-01'), date('Y-m-01')]
+            "INSERT INTO rent_records (id, tenant_id, unit_id, month_for, due_date, amount, status) VALUES
+             (100, 5, 1, ?, ?, 5000.00, 'Pending'), (101, 6, 3, ?, ?, 7000.00, 'Pending')",
+            [date('Y-m-01'), date('Y-m-05'), date('Y-m-01'), date('Y-m-05')]
         );
 
         $own = qa_functional_request($port, 'POST', '/api/rent.php', 'tenant.a', ['json' => ['id' => 100, 'method' => 'Cash']]);

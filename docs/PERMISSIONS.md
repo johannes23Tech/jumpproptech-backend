@@ -97,20 +97,36 @@ New staff accounts are created through `POST /api/staff.php` with an explicit `s
 | `GET/POST/PATCH /api/inspections.php` | `leases.view` | `leases.manage` | Move-in/out and routine inspections with Cloudinary photos |
 | `GET /api/generate_lease.php` | `leases.view` | — | Retired (410): the platform no longer generates lease clauses |
 
+## Phase 3 endpoint coverage
+
+| Endpoint | Read permission | Write permission | Notes |
+| --- | --- | --- | --- |
+| `GET /api/rent.php` | `payments.view` | — | Company-wide register, derived overdue status and per-record payment attempts |
+| `GET /api/rent.php?view=arrears` | `arrears.view` (staff) / own (tenant) | — | Aging buckets; future obligations are scheduled, not arrears |
+| `POST /api/rent.php` `record_cash` | — | `payments.record_cash` | Full amount only; issues a sequential receipt |
+| `POST /api/rent.php` `submit_eft` | — | tenant (own record) or `payments.verify_eft` | Uploads Cloudinary proof only; does not mark rent paid |
+| `POST /api/rent.php` `verify_eft` | — | `payments.verify_eft` | Staff confirm the funds cleared, then a receipt is issued |
+| `POST /api/rent.php` `reject_eft` | — | `payments.verify_eft` | Reason required; tenant may resubmit |
+| `POST /api/rent.php` `reverse` | — | `payments.reverse` | Keeps the record, voids the receipt, never reuses its number |
+| `POST /api/rent.php` `generate` | — | `payments.reconcile` | Backfills obligations from the active lease; never overwrites |
+
+Property managers and auditors have read-only `payments.view`/`arrears.view`. Finance and administrators record and verify payments. Tenants can never mark their own rent as paid.
+
 ## Migration checklist
 
 1. Run `migrations/2026-11-17_phase0_roles_and_company.sql`.
 2. Run `migrations/2026-11-18_phase1_property_tenant_core.sql`.
 3. Run `migrations/2026-11-18_phase2_leases_deposits.sql`. A legacy `leases` table without a `version` column is preserved as `leases_legacy`.
-4. Verify backfill:
+4. Run `migrations/2026-11-18_phase3_rent_cash_eft.sql`. It adds `tenants.rent_due_day`, obligation due dates, `rent_payments`, `receipts` and `receipt_sequences`.
+5. Verify backfill:
    ```sql
    SELECT role, staff_role, account_type, COUNT(*)
    FROM users GROUP BY role, staff_role, account_type;
    ```
-3. Create the company record through a controlled admin action; do not invent a legal name.
-4. Create real staff accounts through `POST /api/staff.php`.
-5. Keep `subscription_status` dormant. It no longer gates access.
-6. Do not re-enable the public marketplace, landlord sign-up or subscription paywall.
+6. Create the company record through a controlled admin action; do not invent a legal name.
+7. Create real staff accounts through `POST /api/staff.php`.
+8. Keep `subscription_status` dormant. It no longer gates access.
+9. Do not re-enable the public marketplace, landlord sign-up or subscription paywall.
 
 ## Open items
 

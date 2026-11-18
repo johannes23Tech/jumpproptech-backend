@@ -4,6 +4,7 @@ require_once '../config/security.php';
 require_once '../config/audit.php';
 require_once '../config/permissions.php';
 require_once '../config/leases.php';
+require_once '../config/rent.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
@@ -21,7 +22,7 @@ if ($method === 'GET') {
     // Single-company portfolio: authorised staff see every company tenant.
     // The old per-landlord owner_id filter is retired.
     $query = "SELECT 
-                t.id, t.name, t.phone, t.email, t.lease_start, t.lease_end, t.deposit, t.monthly_rent,
+                t.id, t.name, t.phone, t.email, t.lease_start, t.lease_end, t.deposit, t.monthly_rent, t.rent_due_day,
                 t.id_number, t.alt_email, t.emergency_contact_name, t.emergency_contact_phone, 
                 t.emergency_contact_email, t.emergency_relationship, t.vehicle_type, t.vehicle_details,
                 t.id_document,
@@ -34,6 +35,42 @@ if ($method === 'GET') {
     $stmt = $conn->prepare($query);
     $stmt->execute();
     echo json_encode($stmt->fetchAll(PDO::FETCH_ASSOC));
+    exit();
+}
+
+if ($method === 'PATCH') {
+    permission_require($actor, 'tenants.manage');
+
+    $data = json_decode(file_get_contents("php://input"));
+    if (!is_object($data)) {
+        security_json_response(400, ["message" => "Invalid request body."]);
+    }
+
+    $tenantId = filter_var($data->id ?? 0, FILTER_VALIDATE_INT);
+    $rentDueDay = filter_var($data->rent_due_day ?? 0, FILTER_VALIDATE_INT);
+    if ($tenantId === false || $tenantId < 1 || $rentDueDay === false || $rentDueDay < 1 || $rentDueDay > 31) {
+        security_json_response(400, ["message" => "A valid tenant and rent due day (1-31) are required."]);
+    }
+
+    $existing = $conn->prepare('SELECT rent_due_day FROM tenants WHERE id = :id LIMIT 1');
+    $existing->execute([':id' => $tenantId]);
+    $previous = $existing->fetchColumn();
+    if ($previous === false) {
+        security_json_response(404, ["message" => "Tenant not found."]);
+    }
+
+    // Changing the due day only affects obligations generated from now on.
+    // Already-issued obligations keep their contractual date.
+    $conn->prepare('UPDATE tenants SET rent_due_day = :rent_due_day WHERE id = :id')
+        ->execute([':rent_due_day' => $rentDueDay, ':id' => $tenantId]);
+
+    audit_log($conn, (int) $user->user_id, 'tenant.rent_due_day_changed', [
+        'entity_type' => 'tenant',
+        'entity_id' => $tenantId,
+        'meta' => ['from' => $previous === null ? null : (int) $previous, 'to' => $rentDueDay],
+    ]);
+
+    security_json_response(200, ["message" => "Rent due day updated.", "rent_due_day" => $rentDueDay]);
     exit();
 }
 
@@ -70,6 +107,7 @@ if ($method === 'POST') {
     $leaseEnd = trim((string) ($data->lease_end ?? ''));
     $deposit = filter_var($data->deposit ?? 0, FILTER_VALIDATE_FLOAT);
     $monthlyRent = filter_var($data->monthly_rent ?? 0, FILTER_VALIDATE_FLOAT);
+    $rentDueDay = filter_var($data->rent_due_day ?? 1, FILTER_VALIDATE_INT);
     $datePattern = '/^\d{4}-\d{2}-\d{2}$/';
 
     if ($unitId === false || $unitId < 1
@@ -77,9 +115,10 @@ if ($method === 'POST') {
         || !preg_match($datePattern, $leaseEnd)
         || $leaseEnd < $leaseStart
         || $deposit === false || $deposit < 0
-        || $monthlyRent === false || $monthlyRent < 0) {
+        || $monthlyRent === false || $monthlyRent < 0
+        || $rentDueDay === false || $rentDueDay < 1 || $rentDueDay > 31) {
         security_json_response(400, [
-            "message" => "A valid unit, lease period and non-negative deposit/rent are required."
+            "message" => "A valid unit, lease period, rent due day (1-31) and non-negative deposit/rent are required."
         ]);
     }
 
@@ -133,8 +172,8 @@ if ($method === 'POST') {
         $newUserId = $conn->lastInsertId();
 
         // 3. Create the Tenant Record
-        $query = "INSERT INTO tenants (owner_id, user_id, unit_id, status, name, phone, email, lease_start, lease_end, deposit, monthly_rent) 
-                  VALUES (:owner_id, :user_id, :unit_id, 'active', :name, :phone, :email, :lease_start, :lease_end, :deposit, :monthly_rent)";
+        $query = "INSERT INTO tenants (owner_id, user_id, unit_id, status, name, phone, email, lease_start, lease_end, deposit, monthly_rent, rent_due_day) 
+                  VALUES (:owner_id, :user_id, :unit_id, 'active', :name, :phone, :email, :lease_start, :lease_end, :deposit, :monthly_rent, :rent_due_day)";
         $stmt = $conn->prepare($query);
         $stmt->execute([
             ':owner_id' => $ownerId, 
@@ -146,13 +185,14 @@ if ($method === 'POST') {
             ':lease_start' => $leaseStart, 
             ':lease_end' => $leaseEnd,
             ':deposit' => $deposit, 
-            ':monthly_rent' => $monthlyRent
+            ':monthly_rent' => $monthlyRent,
+            ':rent_due_day' => $rentDueDay
         ]);
         $tenantId = $conn->lastInsertId();
 
         // Create the first lease version as a draft so management can attach
         // the approved lease document and record signatures.
-        lease_create_draft(
+        $leaseId = lease_create_draft(
             $conn,
             (int) $tenantId,
             (int) $unitId,
@@ -170,13 +210,16 @@ if ($method === 'POST') {
         $updateUnit = $conn->prepare("UPDATE units SET status = 'Occupied' WHERE id = :unit_id");
         $updateUnit->execute([':unit_id' => $unitId]);
 
-        // 5. Create initial Pending Rent Record
-        $rentQuery = "INSERT INTO rent_records (tenant_id, unit_id, month_for, amount, status) VALUES (:tenant_id, :unit_id, :month, :amount, 'Pending')";
+        // 5. Create the first Pending rent obligation with its contractual due date.
+        $rentQuery = "INSERT INTO rent_records (tenant_id, unit_id, lease_id, month_for, due_date, amount, status)
+                      VALUES (:tenant_id, :unit_id, :lease_id, :month, :due_date, :amount, 'Pending')";
         $rentStmt = $conn->prepare($rentQuery);
         $rentStmt->execute([
             ':tenant_id' => $tenantId, 
             ':unit_id' => $unitId,
+            ':lease_id' => $leaseId,
             ':month' => date('Y-m-01'), 
+            ':due_date' => rent_due_date_for(date('Y-m-01'), (int) $rentDueDay),
             ':amount' => $monthlyRent
         ]);
 

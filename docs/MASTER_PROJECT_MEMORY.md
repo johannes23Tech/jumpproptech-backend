@@ -338,7 +338,7 @@ Lease templates and legal wording must be supplied/approved by management and re
 
 Support bank statement CSV/Excel import as an integration workflow, subject to the bank's export format and approval. Matching must not silently mark ambiguous transactions as paid. Record who verified or reconciled each payment and when.
 
-**Critical current defect to fix:** `api/rent.php` currently marks a record paid and mints a **random** receipt number (`RCP-YYYY-XXXXX`). This violates the sequential receipt requirement. Replace it with a locked, database-backed receipt sequence and a payment state machine. Do not simply format a timestamp.
+**Implementation status (Phase 3):** `api/rent.php` now uses the Phase 3 state machine. `config/rent.php` owns obligation generation, derived overdue status, arrears aging and the locked receipt service. Receipt numbers come from `receipt_sequences` inside the payment transaction and are never random, reused or renumbered. The previous random-number defect is closed; do not reintroduce formatting-based receipt numbers.
 
 ---
 
@@ -676,6 +676,19 @@ These are not permission to invent values. Ask the owner or authorised business 
 
 **Deployment note:** run the Phase 2 migration before deploying this API. The migration is additive and safe to re-run, and preserves a legacy `leases` table.
 
+### 24.1d Phase 3 applied (18 November 2026)
+
+- `migrations/2026-11-18_phase3_rent_cash_eft.sql` adds `tenants.rent_due_day`, `rent_records.due_date/lease_id/updated_at`, expands the rent status enum to `Pending, Overdue, Submitted, PendingVerification, Paid, Rejected, Reversed`, and adds `rent_payments`, `receipts` and `receipt_sequences`.
+- `config/rent.php` owns the Phase 3 helpers: contractual due-date clamping, idempotent obligation generation from active lease terms, the locked per-year receipt sequence, receipt issuance, derived overdue status and arrears aging.
+- `api/rent.php` implements the cash/EFT state machine. `payments.record_cash` records counted cash; `payments.verify_eft` verifies EFT against the bank; `payments.reverse` reverses a verified payment and voids its receipt. Tenants may only submit Cloudinary proof for their own obligations, and proof submission never marks rent paid.
+- Receipts are sequential per year (`RCP-YYYY-NNNNNN`), issued inside the payment transaction. A reversal keeps the rent record and the receipt row, marks both voided/reversed, and never reuses or renumbers the number.
+- Overdue is derived at read time from the contractual `due_date`; there is no background job. Arrears aging covers current, 1–30, 31–60, 61–90 and 90+ days, and future obligations are not counted.
+- Lease activation generates rent obligations from the lease dates and monthly rent using the tenant's individual `rent_due_day` (default 1, clamped to month length). Existing months are skipped; only a null `due_date` is backfilled.
+- `api/tenant_data.php` now returns each obligation's effective status and payment attempts, the tenant's receipts (voided receipts stay visible), and the arrears summary.
+- Frontend: `/rent` is a staff register with filters, EFT proof review, verify/reject/reverse and cash recording; the tenant statement gains EFT proof upload, status/rejection display, receipts and arrears.
+
+**Deployment note:** the Phase 3 migration has already been applied to the Azure database. It is additive and safe to re-run.
+
 ### 24.2 Drift to retire
 
 | Drift | Location | Action |
@@ -696,9 +709,9 @@ These are not permission to invent values. Ask the owner or authorised business 
 - ~~Application review/approval workflow.~~ (Phase 1)
 - ~~Tenant portal linked to approved applications.~~ (Phase 1 foundation)
 - ~~Lease versions, signature records, deposit ledger, inspections.~~ (Phase 2)
-- Contractual due dates, arrears/aging, late-penalty approval.
-- Cash/EFT payment records with proof, verification and rejection states.
-- Database-backed sequential receipts and reversal workflow.
+- ~~Contractual due dates, arrears/aging, late-penalty approval.~~ (Phase 3 — due dates, obligation generation and aging; penalty approval remains policy-driven)
+- ~~Cash/EFT payment records with proof, verification and rejection states.~~ (Phase 3)
+- ~~Database-backed sequential receipts and reversal workflow.~~ (Phase 3)
 - Bank statement import and reconciliation.
 - Internal maintenance work orders, assignment, notes and costs.
 - Suppliers, budgets, expense approval and attachments.

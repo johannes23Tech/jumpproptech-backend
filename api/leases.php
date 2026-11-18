@@ -14,6 +14,7 @@ require_once '../config/security.php';
 require_once '../config/audit.php';
 require_once '../config/permissions.php';
 require_once '../config/leases.php';
+require_once '../config/rent.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
@@ -179,7 +180,7 @@ if ($method === 'POST') {
     }
 
     $leaseStmt = $conn->prepare(
-        "SELECT l.*, t.unit_id AS tenant_unit, t.name AS tenant_name
+        "SELECT l.*, t.unit_id AS tenant_unit, t.name AS tenant_name, t.rent_due_day
          FROM leases l JOIN tenants t ON l.tenant_id = t.id
          WHERE l.id = :id LIMIT 1"
     );
@@ -369,6 +370,19 @@ if ($method === 'POST') {
 
             $conn->prepare("UPDATE units SET status = 'Occupied' WHERE id = :unit_id AND archived_at IS NULL")
                 ->execute([':unit_id' => (int) $lease['unit_id']]);
+
+            // Rent obligations are generated from the activated lease terms,
+            // using the tenant's individual contractual due day.
+            rent_generate_obligations(
+                $conn,
+                (int) $lease['tenant_id'],
+                (int) $lease['unit_id'],
+                (int) $leaseId,
+                (string) $lease['start_date'],
+                (string) $lease['end_date'],
+                (float) $lease['monthly_rent'],
+                !empty($lease['rent_due_day']) ? (int) $lease['rent_due_day'] : 1
+            );
 
             $conn->commit();
         } catch (Throwable $e) {
