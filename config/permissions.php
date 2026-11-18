@@ -190,6 +190,20 @@ function permission_require(array $user, string $permission): void
 }
 
 /**
+ * Super Administrator-only access for Control Center (tech/sensitive) features.
+ *
+ * @param array<string,mixed> $user
+ */
+function permission_require_super_admin(array $user): void
+{
+    if (!permission_is_staff($user) || permission_role_for_user($user) !== 'super_administrator') {
+        security_json_response(403, [
+            'message' => 'Unauthorized. Super Administrator access required.',
+        ]);
+    }
+}
+
+/**
  * Map an approved staff role to the legacy users.role value that the existing
  * endpoint compatibility layer still understands.
  */

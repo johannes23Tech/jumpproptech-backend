@@ -5,6 +5,7 @@ require_once '../../config/security.php';
 require_once '../../config/audit.php';
 require_once '../../config/mfa.php';
 require_once '../../config/permissions.php';
+require_once '../../config/sessions.php';
 
 const LOGIN_MAX_ATTEMPTS = 5;   // per email + IP
 const LOGIN_MAX_IP_ATTEMPTS = 50; // per IP, stops spraying many accounts (high enough for shared NAT)
@@ -115,7 +116,8 @@ try {
 
         // Generate a full access JWT. `ver` enables global revocation; `jti`
         // enables single-device logout; `scope=access` blocks challenge reuse.
-        $jwt = jwt_issue_access_token($user);
+        $mint = jwt_mint_access_token($user);
+        session_record($conn, $mint);
 
         audit_log($conn, (int) $user['id'], 'auth.login.success', [
             'actor_email' => $user['email'],
@@ -124,7 +126,7 @@ try {
 
         security_json_response(200, [
             "message" => "Login successful.",
-            "token" => $jwt,
+            "token" => $mint['token'],
             "user" => permission_user_payload($user),
         ]);
     }

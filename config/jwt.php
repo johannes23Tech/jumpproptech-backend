@@ -26,25 +26,47 @@ define('JWT_EXPIRY', intval(getenv('JWT_EXPIRY')) ?: 3600); // 1 hour
 define('JWT_ISSUER', getenv('JWT_ISSUER') ?: 'jumpproptech');
 
 /**
- * Issue a full access token.
+ * Mint a full access token and return it with its claims metadata.
  *
  * Every token carries a `scope` claim so the short-lived MFA challenge token
  * (scope=mfa) can never be replayed as an authenticated session.
  *
  * @param array $user Row with id, role and token_version.
+ * @return array{token:string,jti:string,iat:int,exp:int,user_id:int}
+ */
+function jwt_mint_access_token(array $user): array
+{
+    $issuedAt = time();
+    $jti = bin2hex(random_bytes(16));
+    $exp = $issuedAt + JWT_EXPIRY;
+    $userId = (int) $user['id'];
+
+    $token = JWT::encode([
+        'iss' => JWT_ISSUER,
+        'iat' => $issuedAt,
+        'exp' => $exp,
+        'jti' => $jti,
+        'scope' => 'access',
+        'ver' => (int) ($user['token_version'] ?? 0),
+        'user_id' => $userId,
+        'role' => (string) $user['role'],
+    ], JWT_SECRET, JWT_ALGO);
+
+    return [
+        'token' => $token,
+        'jti' => $jti,
+        'iat' => $issuedAt,
+        'exp' => $exp,
+        'user_id' => $userId,
+    ];
+}
+
+/**
+ * Issue a full access token (backward-compatible string form).
+ *
+ * @param array $user Row with id, role and token_version.
  */
 function jwt_issue_access_token(array $user): string
 {
-    $issuedAt = time();
-
-    return JWT::encode([
-        'iss' => JWT_ISSUER,
-        'iat' => $issuedAt,
-        'exp' => $issuedAt + JWT_EXPIRY,
-        'jti' => bin2hex(random_bytes(16)),
-        'scope' => 'access',
-        'ver' => (int) ($user['token_version'] ?? 0),
-        'user_id' => (int) $user['id'],
-        'role' => (string) $user['role'],
-    ], JWT_SECRET, JWT_ALGO);
+    return jwt_mint_access_token($user)['token'];
 }

@@ -4,6 +4,7 @@ require_once '../../config/db.php';
 require_once '../../config/security.php';
 require_once '../../config/audit.php';
 require_once '../../config/mfa.php';
+require_once '../../config/sessions.php';
 require_once '../../middleware/check_role.php';
 
 const MFA_MAX_ATTEMPTS = 5;
@@ -106,20 +107,25 @@ try {
 
 security_rate_limit_clear($conn, 'mfa_verify', (string) $userId);
 
+session_revoke_all_for_user($conn, $userId, 'mfa_enabled');
+
 audit_log($conn, $userId, 'auth.mfa.enabled', [
     'entity_type' => 'user',
     'entity_id' => $userId,
 ]);
 
+// Other sessions are signed out; keep this device signed in.
+$mint = jwt_mint_access_token([
+    'id' => $userId,
+    'role' => $row['role'] ?? $user->role,
+    'token_version' => (int) ($row['token_version'] ?? 0),
+]);
+session_record($conn, $mint);
+
 security_json_response(200, [
     "message" => "Multi-factor authentication is now enabled. Store your recovery codes somewhere safe.",
     "enabled" => true,
-    // Other sessions are signed out; keep this device signed in.
-    "token" => jwt_issue_access_token([
-        'id' => $userId,
-        'role' => $row['role'] ?? $user->role,
-        'token_version' => (int) ($row['token_version'] ?? 0),
-    ]),
+    "token" => $mint['token'],
     // Shown once. The server only keeps bcrypt hashes.
     "recovery_codes" => $recoveryCodes,
 ]);

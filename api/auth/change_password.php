@@ -3,6 +3,7 @@ require_once '../../config/db.php';
 require_once '../../config/jwt.php';
 require_once '../../config/security.php';
 require_once '../../config/audit.php';
+require_once '../../config/sessions.php';
 require_once '../../middleware/check_role.php';
 require_once '../../vendor/autoload.php';
 
@@ -67,6 +68,8 @@ try {
 
     security_rate_limit_clear($conn, 'change_password', (string) $user->user_id);
 
+    session_revoke_all_for_user($conn, (int) $user->user_id, 'password_changed');
+
     audit_log($conn, (int) $user->user_id, 'auth.password.changed', [
         'entity_type' => 'user',
         'entity_id' => (int) $user->user_id,
@@ -75,13 +78,16 @@ try {
 
     // Keep the current device signed in with a fresh token; every other
     // token (older version) is now rejected.
+    $mint = jwt_mint_access_token([
+        'id' => (int) $user->user_id,
+        'role' => $user->role,
+        'token_version' => $newVersion,
+    ]);
+    session_record($conn, $mint);
+
     security_json_response(200, [
         "message" => "Password updated successfully. Other sessions have been signed out.",
-        "token" => jwt_issue_access_token([
-            'id' => (int) $user->user_id,
-            'role' => $user->role,
-            'token_version' => $newVersion,
-        ]),
+        "token" => $mint['token'],
     ]);
 } catch (Exception $e) {
     if ($conn->inTransaction()) {

@@ -3,6 +3,7 @@ require_once '../../config/db.php';
 require_once '../../config/jwt.php';
 require_once '../../config/security.php';
 require_once '../../config/audit.php';
+require_once '../../config/sessions.php';
 require_once '../../vendor/autoload.php';
 
 use \Firebase\JWT\JWT;
@@ -99,11 +100,12 @@ try {
         $userId = (int) $conn->lastInsertId();
 
         // Generate a JWT for auto-login.
-        $jwt = jwt_issue_access_token([
+        $mint = jwt_mint_access_token([
             'id' => $userId,
             'role' => $role,
             'token_version' => 0,
         ]);
+        session_record($conn, $mint);
 
         audit_log($conn, $userId, 'auth.register.success', [
             'actor_email' => $email,
@@ -113,7 +115,7 @@ try {
 
         security_json_response(201, [
             "message" => "Account created successfully!",
-            "token" => $jwt,
+            "token" => $mint['token'],
             "user" => [
                 "id" => $userId,
                 "full_name" => $fullName,

@@ -4,6 +4,7 @@ require_once '../../config/db.php';
 require_once '../../config/security.php';
 require_once '../../config/audit.php';
 require_once '../../config/mfa.php';
+require_once '../../config/sessions.php';
 require_once '../../middleware/check_role.php';
 
 const MFA_DISABLE_MAX_ATTEMPTS = 5;
@@ -114,18 +115,23 @@ try {
 
 security_rate_limit_clear($conn, 'mfa_disable', (string) $userId);
 
+session_revoke_all_for_user($conn, $userId, 'mfa_disabled');
+
 audit_log($conn, $userId, 'auth.mfa.disabled', [
     'entity_type' => 'user',
     'entity_id' => $userId,
     'meta' => ['sessions_invalidated' => true],
 ]);
 
+$mint = jwt_mint_access_token([
+    'id' => $userId,
+    'role' => $row['role'] ?? $user->role,
+    'token_version' => (int) ($row['token_version'] ?? 0),
+]);
+session_record($conn, $mint);
+
 security_json_response(200, [
     "message" => "Multi-factor authentication has been disabled. Other sessions have been signed out.",
     "enabled" => false,
-    "token" => jwt_issue_access_token([
-        'id' => $userId,
-        'role' => $row['role'] ?? $user->role,
-        'token_version' => (int) ($row['token_version'] ?? 0),
-    ]),
+    "token" => $mint['token'],
 ]);

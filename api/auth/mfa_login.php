@@ -9,6 +9,8 @@ require_once '../../config/security.php';
 require_once '../../config/audit.php';
 require_once '../../config/mfa.php';
 require_once '../../config/permissions.php';
+require_once '../../config/jwt.php';
+require_once '../../config/sessions.php';
 
 const MFA_LOGIN_MAX_ATTEMPTS = 7;
 const MFA_LOGIN_WINDOW = 900;
@@ -127,6 +129,9 @@ security_revoke_token($conn, (string) $challenge->jti, (int) $challenge->exp);
 
 security_rate_limit_clear($conn, 'mfa_login', (string) $userId);
 
+$mint = jwt_mint_access_token($user);
+session_record($conn, $mint);
+
 audit_log($conn, $userId, 'auth.login.success', [
     'actor_email' => $user['email'],
     'meta' => ['role' => permission_role_for_user($user), 'mfa' => true],
@@ -134,6 +139,6 @@ audit_log($conn, $userId, 'auth.login.success', [
 
 security_json_response(200, [
     "message" => "Login successful.",
-    "token" => jwt_issue_access_token($user),
+    "token" => $mint['token'],
     "user" => permission_user_payload($user),
 ]);
