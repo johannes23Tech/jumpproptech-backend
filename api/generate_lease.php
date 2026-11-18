@@ -2,47 +2,39 @@
 require_once '../config/db.php';
 require_once '../config/security.php';
 require_once '../config/audit.php';
+require_once '../config/permissions.php';
 require_once '../middleware/check_role.php';
 require_once '../vendor/autoload.php';
 
 use Dompdf\Dompdf;
 
 $user = authenticate();
+$actor = (array) $user;
 
-// Only property-side accounts may generate a lease.
-if (!in_array($user->role, ['landlord', 'agent', 'superadmin'], true)) {
-    security_json_response(403, ["message" => "Unauthorized."]);
-}
+// Lease documents are part of the company record. Only staff with lease
+// access may generate them; tenants and technicians are excluded.
+permission_require($actor, 'leases.view');
 
 $tenantId = filter_var($_GET['tenant_id'] ?? 0, FILTER_VALIDATE_INT);
 if ($tenantId === false || $tenantId < 1) {
     security_json_response(400, ["message" => "A valid tenant id is required."]);
 }
 
-// Fetch Tenant, Unit, Property, and Landlord details. The owner/agent
-// predicate is applied unless the caller is a superadmin.
+// Fetch Tenant, Unit, Property, and historical landlord details. The company
+// register is authoritative, so there is no per-landlord predicate.
 $query = "SELECT 
             t.name as tenant_name, t.id_number, t.phone, t.email, t.lease_start, t.lease_end, t.deposit, t.monthly_rent,
             u.unit_number, u.size_dimensions, u.is_furnished,
             p.name as property_name, p.address,
-            l.full_name as landlord_name
+            COALESCE(l.full_name, 'JUMP Living') as landlord_name
           FROM tenants t 
           JOIN units u ON t.unit_id = u.id 
           JOIN properties p ON u.property_id = p.id
-          JOIN users l ON t.owner_id = l.id
+          LEFT JOIN users l ON t.owner_id = l.id
           WHERE t.id = :tenant_id";
 
-$params = [':tenant_id' => $tenantId];
-
-if ($user->role !== 'superadmin') {
-    $query .= " AND (t.owner_id = :uid_owner OR p.landlord_id = :uid_landlord OR p.agent_id = :uid_agent)";
-    $params[':uid_owner'] = $user->user_id;
-    $params[':uid_landlord'] = $user->user_id;
-    $params[':uid_agent'] = $user->user_id;
-}
-
 $stmt = $conn->prepare($query);
-$stmt->execute($params);
+$stmt->execute([':tenant_id' => $tenantId]);
 $data = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$data) {

@@ -103,6 +103,7 @@ $users = [
     [12, 'QA Logout User', 'logout.user@qa.local', 'landlord', 'active'],
     [13, 'QA Reset User', 'reset.user@qa.local', 'landlord', 'active'],
     [14, 'QA Extra Landlord', 'extra.landlord@qa.local', 'landlord', 'active'],
+    [15, 'QA Finance', 'finance@qa.local', 'landlord', 'active'],
 ];
 $insertUser = $qa->prepare(
     'INSERT INTO users (id, full_name, email, password_hash, phone, role, subscription_status, token_version)
@@ -153,6 +154,23 @@ $qa->exec("INSERT INTO expenses (id, owner_id, property_id, category, amount, ex
 
 $qa->exec("INSERT INTO leases (id, tenant_id, unit_id, lease_start, lease_end, deposit_amount, status) VALUES
     (1, 5, 1, '{$leaseStart}', '{$leaseEnd}', 5000.00, 'Active')");
+
+// Apply the Phase 0 account-model migration after seeding so the QA schema
+// matches the deployed API. The backfill then maps the seeded legacy roles onto
+// the approved staff roles and account types.
+$phase0Path = __DIR__ . '/../migrations/2026-11-17_phase0_roles_and_company.sql';
+if (!is_file($phase0Path)) {
+    fail('Phase 0 migration not found: ' . $phase0Path);
+}
+$phase0Sql = preg_replace('/^\s*--.*$/m', '', (string) file_get_contents($phase0Path));
+foreach (array_filter(array_map('trim', explode(';', $phase0Sql))) as $statement) {
+    $qa->exec($statement);
+}
+out('Applied Phase 0 account-model migration to the QA schema.');
+
+// Give the finance fixture the finance/accountant staff role. Legacy roles
+// alone cannot express every approved staff role.
+$qa->exec("UPDATE users SET staff_role = 'finance_accountant', account_type = 'staff' WHERE id = 15");
 
 out('Database ready: ' . QA_DB . ' (' . count($tables) . ' tables, ' . count($users) . ' users).');
 out('App credentials: ' . QA_DB_USER . ' / ' . QA_DB_PASS);

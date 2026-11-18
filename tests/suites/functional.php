@@ -34,6 +34,7 @@ function qa_functional_tokens(int $port): array
         'maintenance' => 'maintenance@qa.local',
         'landlord.expired' => 'landlord.expired@qa.local',
         'tenant.self' => 'tenant.self@qa.local',
+        'finance' => 'finance@qa.local',
     ] as $key => $email) {
         $tokens[$key] = qa_token($port, $email);
     }
@@ -319,16 +320,17 @@ function run_functional(Reporter $reporter, int $port): void
     // -----------------------------------------------------------------------
     $reporter->section('Functional — properties and units');
 
-    $reporter->test('Landlords only list their own properties', function () use ($port): void {
+    $reporter->test('Staff see the company-wide property register', function () use ($port): void {
         $response = qa_functional_request($port, 'GET', '/api/properties.php', 'landlord.a');
         Assert::status(200, $response);
-        Assert::same([1], qa_functional_ids(qa_functional_json($response)));
+        $ids = qa_functional_ids(qa_functional_json($response));
+        Assert::ok(in_array(1, $ids, true), 'staff cannot see property 1');
+        Assert::ok(in_array(2, $ids, true), 'staff cannot see the rest of the company portfolio');
 
         $other = qa_functional_request($port, 'GET', '/api/properties.php', 'landlord.b');
         Assert::status(200, $other);
-        $ids = qa_functional_ids(qa_functional_json($other));
-        Assert::ok(in_array(2, $ids, true), 'landlord B cannot see own property');
-        Assert::ok(!in_array(1, $ids, true), 'landlord B can see landlord A property');
+        $otherIds = qa_functional_ids(qa_functional_json($other));
+        Assert::ok(in_array(1, $otherIds, true) && in_array(2, $otherIds, true), 'staff do not share one company register');
     });
 
     $reporter->test('Superadmin sees every property', function () use ($port): void {
@@ -338,16 +340,14 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::ok(in_array(1, $ids, true) && in_array(2, $ids, true), 'superadmin does not see all properties');
     });
 
-    $reporter->test('Superadmin must target a real landlord when creating a property', function () use ($port): void {
-        $missing = qa_functional_request($port, 'POST', '/api/properties.php', 'superadmin', [
-            'json' => ['name' => 'No owner', 'address' => '1 Nowhere', 'property_type' => 'House'],
+    $reporter->test('Property creation attributes ownership to the acting staff member', function () use ($port): void {
+        $created = qa_functional_request($port, 'POST', '/api/properties.php', 'superadmin', [
+            'json' => ['landlord_id' => 5, 'name' => 'Company Owned', 'address' => '1 Nowhere', 'property_type' => 'House'],
         ]);
-        Assert::status(400, $missing);
-
-        $nonLandlord = qa_functional_request($port, 'POST', '/api/properties.php', 'superadmin', [
-            'json' => ['landlord_id' => 5, 'name' => 'Tenant owned', 'address' => '1 Nowhere', 'property_type' => 'House'],
-        ]);
-        Assert::status(404, $nonLandlord);
+        Assert::status(201, $created);
+        $id = (int) (qa_functional_json($created)['id'] ?? 0);
+        Assert::ok($id > 0, 'no property id returned');
+        Assert::same(1, (int) qa_value('SELECT landlord_id FROM properties WHERE id = ?', [$id]), 'client-supplied landlord_id must be ignored');
     });
 
     $reporter->test('Property creation sanitizes input and ignores client ownership', function () use ($port): void {
@@ -378,12 +378,12 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::status(400, $invalid);
     });
 
-    $reporter->test('Units are scoped to the landlord and validate their payload', function () use ($port): void {
+    $reporter->test('Units share the company register and validate their payload', function () use ($port): void {
         $response = qa_functional_request($port, 'GET', '/api/units.php', 'landlord.a');
         Assert::status(200, $response);
         $ids = qa_functional_ids(qa_functional_json($response));
-        Assert::ok(in_array(1, $ids, true) && in_array(2, $ids, true), 'landlord A cannot see own units');
-        Assert::ok(!in_array(3, $ids, true), 'landlord A can see landlord B unit');
+        Assert::ok(in_array(1, $ids, true) && in_array(2, $ids, true), 'staff cannot see the company units');
+        Assert::ok(in_array(3, $ids, true), 'staff cannot see units from the rest of the portfolio');
 
         $created = qa_functional_request($port, 'POST', '/api/units.php', 'landlord.a', [
             'json' => ['property_id' => 1, 'unit_number' => 'A3', 'size_dimensions' => '40sqm', 'monthly_rent' => 4500, 'status' => 'Vacant'],
@@ -396,10 +396,16 @@ function run_functional(Reporter $reporter, int $port): void
         ]);
         Assert::status(400, $badStatus);
 
-        $foreignProperty = qa_functional_request($port, 'POST', '/api/units.php', 'landlord.a', [
+        // Company-wide staff may add units to any company property.
+        $companyWide = qa_functional_request($port, 'POST', '/api/units.php', 'landlord.a', [
             'json' => ['property_id' => 2, 'unit_number' => 'B9', 'size_dimensions' => '40sqm', 'monthly_rent' => 4500],
         ]);
-        Assert::status(404, $foreignProperty);
+        Assert::status(201, $companyWide);
+
+        $unknownProperty = qa_functional_request($port, 'POST', '/api/units.php', 'landlord.a', [
+            'json' => ['property_id' => 9999, 'unit_number' => 'X1', 'size_dimensions' => '40sqm', 'monthly_rent' => 4500],
+        ]);
+        Assert::status(404, $unknownProperty);
 
         $tenant = qa_functional_request($port, 'GET', '/api/units.php', 'tenant.a');
         Assert::status(403, $tenant);
@@ -470,17 +476,19 @@ function run_functional(Reporter $reporter, int $port): void
     // -----------------------------------------------------------------------
     $reporter->section('Functional — tenants and rent');
 
-    $reporter->test('Tenants are scoped to their owner and never expose credentials', function () use ($port): void {
+    $reporter->test('Staff see the company tenant register and never expose credentials', function () use ($port): void {
         $response = qa_functional_request($port, 'GET', '/api/tenants.php', 'landlord.a');
         Assert::status(200, $response);
         $rows = qa_functional_json($response);
-        Assert::ok(count($rows) >= 1, 'landlord A sees no tenants');
+        Assert::ok(count($rows) >= 1, 'staff member sees no tenants');
         foreach ($rows as $row) {
             Assert::ok(!array_key_exists('password_hash', $row), 'tenant payload leaks password_hash');
         }
         $emails = array_column($rows, 'email');
-        Assert::ok(in_array('tenant.a@qa.local', $emails, true), 'landlord A cannot see tenant A');
-        Assert::ok(!in_array('tenant.b@qa.local', $emails, true), 'landlord A can see landlord B tenant');
+        Assert::ok(in_array('tenant.a@qa.local', $emails, true), 'staff cannot see tenant A');
+        // JUMP PROPTECH is one company: every authorised staff member sees the
+        // full portfolio, not only tenants they personally created.
+        Assert::ok(in_array('tenant.b@qa.local', $emails, true), 'staff cannot see tenant B in the company register');
     });
 
     $reporter->test('Creating a tenant provisions a user, tenant row, rent record and unit status', function () use ($port): void {
@@ -518,7 +526,7 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::same('tenant', qa_functional_json($login)['user']['role'] ?? null);
     });
 
-    $reporter->test('Tenant creation rejects duplicates, weak passwords, bad dates and foreign units', function () use ($port): void {
+    $reporter->test('Tenant creation rejects duplicates, weak passwords, bad dates and unknown units', function () use ($port): void {
         $duplicate = qa_functional_request($port, 'POST', '/api/tenants.php', 'landlord.a', [
             'json' => [
                 'name' => 'Duplicate', 'email' => 'tenant.a@qa.local', 'password' => QA_PASSWORD, 'unit_id' => 2,
@@ -546,7 +554,7 @@ function run_functional(Reporter $reporter, int $port): void
 
         $foreign = qa_functional_request($port, 'POST', '/api/tenants.php', 'landlord.a', [
             'json' => [
-                'name' => 'Foreign', 'email' => 'foreign.tenant@qa.local', 'password' => QA_PASSWORD, 'unit_id' => 3,
+                'name' => 'Unknown unit', 'email' => 'foreign.tenant@qa.local', 'password' => QA_PASSWORD, 'unit_id' => 9999,
                 'lease_start' => date('Y-m-01'), 'lease_end' => date('Y-m-t'),
             ],
         ]);
@@ -556,15 +564,22 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::status(403, $tenant);
     });
 
-    $reporter->test('Rent records are scoped and payment is atomic and single-use', function () use ($port): void {
+    $reporter->test('Rent records are company-wide, permission-gated and single-use', function () use ($port): void {
         $response = qa_functional_request($port, 'GET', '/api/rent.php', 'landlord.a');
         Assert::status(200, $response);
         $rows = qa_functional_json($response);
         $tenantIds = array_map('intval', array_column($rows, 'tenant_id'));
-        Assert::ok($tenantIds !== [], 'landlord A sees no rent records');
-        Assert::ok(!in_array(6, $tenantIds, true), 'landlord A can see landlord B rent');
+        Assert::ok($tenantIds !== [], 'staff member sees no rent records');
+        // Company-wide staff scope: tenant B's record is visible too.
+        Assert::ok(in_array(6, $tenantIds, true), 'staff cannot see the company rent register');
 
-        $pay = qa_functional_request($port, 'POST', '/api/rent.php', 'landlord.a', [
+        // A property manager may view payments but may not record them.
+        $denied = qa_functional_request($port, 'POST', '/api/rent.php', 'landlord.a', [
+            'json' => ['id' => 1, 'method' => 'EFT'],
+        ]);
+        Assert::status(403, $denied);
+
+        $pay = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', [
             'json' => ['id' => 1, 'method' => 'EFT'],
         ]);
         Assert::status(200, $pay);
@@ -576,20 +591,21 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::same($receipt, $row[0]['receipt_number']);
         Assert::same(1, (int) qa_value("SELECT COUNT(*) FROM audit_logs WHERE action = 'rent.payment_recorded' AND entity_id = 1"));
 
-        $again = qa_functional_request($port, 'POST', '/api/rent.php', 'landlord.a', ['json' => ['id' => 1]]);
+        $again = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', ['json' => ['id' => 1]]);
         Assert::status(409, $again);
 
-        $foreign = qa_functional_request($port, 'POST', '/api/rent.php', 'landlord.a', ['json' => ['id' => 2]]);
-        Assert::status(404, $foreign);
+        // Finance staff cover the whole company, including another property.
+        $companyWide = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', ['json' => ['id' => 2]]);
+        Assert::status(200, $companyWide);
 
-        $missing = qa_functional_request($port, 'POST', '/api/rent.php', 'landlord.a', ['json' => []]);
+        $missing = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', ['json' => []]);
         Assert::status(400, $missing);
 
-        $invalid = qa_functional_request($port, 'POST', '/api/rent.php', 'landlord.a', ['json' => ['id' => 'nope']]);
+        $invalid = qa_functional_request($port, 'POST', '/api/rent.php', 'finance', ['json' => ['id' => 'nope']]);
         Assert::status(400, $invalid);
     });
 
-    $reporter->test('Tenants can only pay their own rent records', function () use ($port): void {
+    $reporter->test('Tenants cannot mark rent as paid themselves', function () use ($port): void {
         qa_exec(
             "INSERT INTO rent_records (id, tenant_id, unit_id, month_for, amount, status) VALUES
              (100, 5, 1, ?, 5000.00, 'Pending'), (101, 6, 3, ?, 7000.00, 'Pending')",
@@ -597,11 +613,11 @@ function run_functional(Reporter $reporter, int $port): void
         );
 
         $own = qa_functional_request($port, 'POST', '/api/rent.php', 'tenant.a', ['json' => ['id' => 100, 'method' => 'Cash']]);
-        Assert::status(200, $own);
-        Assert::same('Paid', qa_value('SELECT status FROM rent_records WHERE id = 100'));
+        Assert::status(403, $own);
+        Assert::same('Pending', qa_value('SELECT status FROM rent_records WHERE id = 100'));
 
         $other = qa_functional_request($port, 'POST', '/api/rent.php', 'tenant.a', ['json' => ['id' => 101]]);
-        Assert::status(404, $other);
+        Assert::status(403, $other);
 
         $maintenance = qa_functional_request($port, 'POST', '/api/rent.php', 'maintenance', ['json' => ['id' => 101]]);
         Assert::status(403, $maintenance);
@@ -610,7 +626,7 @@ function run_functional(Reporter $reporter, int $port): void
     // -----------------------------------------------------------------------
     $reporter->section('Functional — maintenance');
 
-    $reporter->test('Landlords and tenants get a scoped maintenance payload', function () use ($port): void {
+    $reporter->test('Landlords and tenants get the expected maintenance payload', function () use ($port): void {
         $landlord = qa_functional_request($port, 'GET', '/api/maintenance.php', 'landlord.a');
         Assert::status(200, $landlord);
         $body = qa_functional_json($landlord);
@@ -678,7 +694,8 @@ function run_functional(Reporter $reporter, int $port): void
         $foreign = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.b', [
             'json' => ['ticket_id' => $ticketId, 'status' => 'Resolved'],
         ]);
-        Assert::status(404, $foreign);
+        // Company-wide staff can manage any company ticket.
+        Assert::status(200, $foreign);
 
         $agent = qa_functional_request($port, 'POST', '/api/maintenance.php', 'agent.a', [
             'json' => ['ticket_id' => 1, 'status' => 'Resolved'],
@@ -713,7 +730,7 @@ function run_functional(Reporter $reporter, int $port): void
     // -----------------------------------------------------------------------
     $reporter->section('Functional — messaging');
 
-    $reporter->test('Landlord inbox and thread are scoped to owned tenants', function () use ($port): void {
+    $reporter->test('Landlord inbox and thread use the company-wide register', function () use ($port): void {
         $inbox = qa_functional_request($port, 'GET', '/api/messages.php', 'landlord.a');
         Assert::status(200, $inbox);
         $body = qa_functional_json($inbox);
@@ -731,7 +748,9 @@ function run_functional(Reporter $reporter, int $port): void
         $foreign = qa_functional_request($port, 'GET', '/api/messages.php?tenant_id=6', 'landlord.a');
         Assert::status(200, $foreign);
         $foreignBody = qa_functional_json($foreign);
-        Assert::same(0, (int) ($foreignBody['tenant_id'] ?? -1), 'landlord A can open landlord B thread');
+        // Company staff can open any company tenant thread.
+        Assert::same(6, (int) ($foreignBody['tenant_id'] ?? 0), 'company staff cannot open a company tenant thread');
+        Assert::same(6, (int) ($foreignBody['other_id'] ?? 0));
     });
 
     $reporter->test('Landlords and tenants can exchange messages only inside their thread', function () use ($port): void {
@@ -766,7 +785,8 @@ function run_functional(Reporter $reporter, int $port): void
         $foreignThread = qa_functional_request($port, 'POST', '/api/messages.php', 'landlord.a', [
             'json' => ['tenant_id' => 6, 'receiver_id' => 6, 'message' => 'Cross tenant'],
         ]);
-        Assert::status(403, $foreignThread);
+        // Company-wide staff may message any company tenant.
+        Assert::status(200, $foreignThread);
 
         $empty = qa_functional_request($port, 'POST', '/api/messages.php', 'tenant.a', [
             'json' => ['tenant_id' => 5, 'receiver_id' => 2, 'message' => '<script></script>'],
@@ -782,7 +802,7 @@ function run_functional(Reporter $reporter, int $port): void
     // -----------------------------------------------------------------------
     $reporter->section('Functional — expenses and dashboard');
 
-    $reporter->test('Expenses are scoped, validated and audited', function () use ($port): void {
+    $reporter->test('Expenses use the company register, are validated and audited', function () use ($port): void {
         $list = qa_functional_request($port, 'GET', '/api/expenses.php', 'landlord.a');
         Assert::status(200, $list);
         $body = qa_functional_json($list);
@@ -800,7 +820,10 @@ function run_functional(Reporter $reporter, int $port): void
         $foreign = qa_functional_request($port, 'POST', '/api/expenses.php', 'landlord.a', [
             'json' => ['property_id' => 2, 'category' => 'X', 'amount' => 1, 'expense_date' => date('Y-m-d')],
         ]);
-        Assert::status(404, $foreign);
+        // Company-wide staff may submit expenses against any company property.
+        Assert::status(200, $foreign);
+        $foreignRow = qa_query('SELECT owner_id FROM expenses WHERE property_id = 2 AND amount = 1 ORDER BY id DESC LIMIT 1');
+        Assert::same(3, (int) $foreignRow[0]['owner_id'], 'expense must be attributed to the property owner');
 
         $badDate = qa_functional_request($port, 'POST', '/api/expenses.php', 'landlord.a', [
             'json' => ['property_id' => 1, 'category' => 'X', 'amount' => 1, 'expense_date' => '2026-02-30'],
@@ -826,10 +849,10 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::status(200, $response);
         $body = qa_functional_json($response);
 
-        $properties = (int) qa_value('SELECT COUNT(*) FROM properties WHERE landlord_id = 2');
-        $units = (int) qa_value('SELECT COUNT(*) FROM units u JOIN properties p ON u.property_id = p.id WHERE p.landlord_id = 2');
-        $occupied = (int) qa_value("SELECT COUNT(*) FROM units u JOIN properties p ON u.property_id = p.id WHERE p.landlord_id = 2 AND u.status = 'Occupied'");
-        $vacant = (int) qa_value("SELECT COUNT(*) FROM units u JOIN properties p ON u.property_id = p.id WHERE p.landlord_id = 2 AND u.status = 'Vacant'");
+        $properties = (int) qa_value('SELECT COUNT(*) FROM properties');
+        $units = (int) qa_value('SELECT COUNT(*) FROM units');
+        $occupied = (int) qa_value("SELECT COUNT(*) FROM units WHERE status = 'Occupied'");
+        $vacant = (int) qa_value("SELECT COUNT(*) FROM units WHERE status = 'Vacant'");
 
         Assert::same($properties, (int) $body['total_properties']);
         Assert::same($units, (int) $body['total_units']);

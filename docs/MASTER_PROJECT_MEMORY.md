@@ -641,7 +641,8 @@ These are not permission to invent values. Ask the owner or authorised business 
 - `api/staff.php` provides permission-gated staff listing, creation and role/active-state updates.
 - Login and MFA login return canonical roles, `staff_role`, `account_type` and `permissions`.
 - Public tenant registration explicitly creates `account_type = 'tenant'`.
-- Frontend `VITE_ENABLE_MARKETPLACE` defaults to off; `/`, `/explore` and `/paywall` redirect to the internal app.
+- Frontend `VITE_ENABLE_MARKETPLACE` is retired. The marketplace, onboarding and paywall screens are no longer routed or bundled.
+- The app entry is a white animated JUMP PROPTECH logo reveal that leads into staff/tenant sign-in.
 - Frontend has a real Staff management screen at `/staff` and role-aware navigation.
 - `docs/PERMISSIONS.md` documents the matrix and migration checklist.
 

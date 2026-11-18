@@ -2,13 +2,14 @@
 require_once '../../config/db.php';
 require_once '../../config/security.php';
 require_once '../../config/audit.php';
+require_once '../../config/permissions.php';
 require_once '../../middleware/check_role.php';
 
 $user = authenticate();
 
-if ($user->role !== 'superadmin') {
-    security_json_response(403, ["message" => "Unauthorized"]);
-}
+// DORMANT: the SaaS subscription gate is retired. This endpoint is kept for
+// historical records only and is restricted to system administrators.
+permission_require((array) $user, 'settings.manage');
 
 $data = json_decode(file_get_contents("php://input"));
 

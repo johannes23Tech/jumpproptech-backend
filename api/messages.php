@@ -2,19 +2,30 @@
 require_once '../config/db.php';
 require_once '../config/security.php';
 require_once '../config/audit.php';
+require_once '../config/permissions.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
+$actor = (array) $user;
 $method = $_SERVER['REQUEST_METHOD'];
+$isStaff = permission_is_staff($actor);
+$isTenant = ($user->role === 'tenant');
+
+if (!$isStaff && !$isTenant) {
+    security_json_response(403, ["message" => "Unauthorized access."]);
+}
 
 if ($method === 'GET') {
-    // If Landlord hits /messages without a tenant ID, show their Inbox (list of tenants)
-    if (($user->role === 'landlord' || $user->role === 'agent') && !isset($_GET['tenant_id'])) {
-        $stmt = $conn->prepare("SELECT t.id, t.name, u.unit_number 
-                                FROM tenants t 
-                                JOIN units u ON t.unit_id = u.id 
-                                WHERE t.owner_id = :uid ORDER BY t.name ASC");
-        $stmt->execute([':uid' => $user->user_id]);
+    // Staff without a tenant id get the company-wide tenant inbox.
+    if ($isStaff && !isset($_GET['tenant_id'])) {
+        permission_require($actor, 'messages.view');
+
+        $stmt = $conn->query(
+            "SELECT t.id, t.name, u.unit_number 
+             FROM tenants t 
+             JOIN units u ON t.unit_id = u.id 
+             ORDER BY t.name ASC"
+        );
         echo json_encode(["inbox" => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
         exit();
     }
@@ -23,29 +34,36 @@ if ($method === 'GET') {
     $other_user_id = 0;
     $chat_title = "";
 
-    if ($user->role === 'tenant') {
-        $q = $conn->prepare("SELECT t.id, t.name as tenant_name, u.full_name as landlord_name, t.owner_id 
-                             FROM tenants t JOIN users u ON t.owner_id = u.id 
-                             WHERE t.user_id = :uid LIMIT 1");
+    if ($isTenant) {
+        $q = $conn->prepare(
+            "SELECT t.id, t.name as tenant_name, u.full_name as landlord_name, t.owner_id 
+             FROM tenants t 
+             JOIN users u ON t.owner_id = u.id 
+             WHERE t.user_id = :uid LIMIT 1"
+        );
         $q->execute([':uid' => $user->user_id]);
         $data = $q->fetch(PDO::FETCH_ASSOC);
-        
+
         if ($data) {
-            $tenant_id = $data['id'];
-            $other_user_id = $data['owner_id'];
-            $chat_title = "Property Manager";
+            $tenant_id = (int) $data['id'];
+            $other_user_id = (int) $data['owner_id'];
+            $chat_title = "JUMP Support";
         }
     } else {
-        $tenant_id = $_GET['tenant_id'] ?? 0;
-        $q = $conn->prepare("SELECT t.user_id, t.name as tenant_name 
-                             FROM tenants t 
-                             WHERE t.id = :tid AND t.owner_id = :uid LIMIT 1");
-        $q->execute([':tid' => $tenant_id, ':uid' => $user->user_id]);
+        permission_require($actor, 'messages.view');
+
+        $tenant_id = filter_var($_GET['tenant_id'] ?? 0, FILTER_VALIDATE_INT) ?: 0;
+        $q = $conn->prepare(
+            "SELECT t.user_id, t.name as tenant_name 
+             FROM tenants t 
+             WHERE t.id = :tid LIMIT 1"
+        );
+        $q->execute([':tid' => $tenant_id]);
         $data = $q->fetch(PDO::FETCH_ASSOC);
-        
+
         if ($data) {
-            $other_user_id = $data['user_id'];
-            $chat_title = $data['tenant_name'];
+            $other_user_id = (int) $data['user_id'];
+            $chat_title = (string) $data['tenant_name'];
         }
     }
 
@@ -54,6 +72,7 @@ if ($method === 'GET') {
         exit();
     }
 
+    // A thread is only visible to its two participants.
     $query = "SELECT * FROM messages 
               WHERE tenant_id = :tid 
               AND (sender_id = :uid_sender OR receiver_id = :uid_receiver)
@@ -64,7 +83,7 @@ if ($method === 'GET') {
         ':uid_sender' => $user->user_id,
         ':uid_receiver' => $user->user_id,
     ]);
-    
+
     echo json_encode([
         "messages" => $stmt->fetchAll(PDO::FETCH_ASSOC),
         "my_id" => $user->user_id,
@@ -79,50 +98,40 @@ if ($method === 'POST') {
     $data = json_decode(file_get_contents("php://input"));
 
     if (empty($data->tenant_id) || empty($data->receiver_id) || empty($data->message)) {
-        http_response_code(400);
-        echo json_encode(["message" => "Tenant, receiver and message are required."]);
-        exit();
+        security_json_response(400, ["message" => "Tenant, receiver and message are required."]);
     }
 
+    $dataTenantId = (int) $data->tenant_id;
+    $dataReceiverId = (int) $data->receiver_id;
+
     // Authorize the sender, the thread and the receiver together.
-    if ($user->role === 'tenant') {
+    if ($isTenant) {
         $tStmt = $conn->prepare("SELECT id, owner_id FROM tenants WHERE user_id = :uid LIMIT 1");
         $tStmt->execute([':uid' => $user->user_id]);
         $tenant = $tStmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$tenant
-            || (int)$data->tenant_id !== (int)$tenant['id']
-            || (int)$data->receiver_id !== (int)$tenant['owner_id']) {
-            http_response_code(403);
-            echo json_encode(["message" => "Unauthorized."]);
-            exit();
+            || $dataTenantId !== (int) $tenant['id']
+            || $dataReceiverId !== (int) $tenant['owner_id']) {
+            security_json_response(403, ["message" => "Unauthorized."]);
         }
-    } elseif ($user->role === 'landlord' || $user->role === 'agent') {
+    } else {
+        permission_require($actor, 'messages.send');
+
+        // Company-wide staff may message any tenant, but the receiver must be
+        // that tenant's linked user account.
         $tStmt = $conn->prepare(
             "SELECT t.id, t.user_id
              FROM tenants t
-             JOIN units u ON t.unit_id = u.id
-             JOIN properties p ON u.property_id = p.id
-             WHERE t.id = :tid AND (t.owner_id = :uid_owner OR p.landlord_id = :uid_landlord OR p.agent_id = :uid_agent)
+             WHERE t.id = :tid
              LIMIT 1"
         );
-        $tStmt->execute([
-            ':tid' => $data->tenant_id,
-            ':uid_owner' => $user->user_id,
-            ':uid_landlord' => $user->user_id,
-            ':uid_agent' => $user->user_id,
-        ]);
+        $tStmt->execute([':tid' => $dataTenantId]);
         $tenant = $tStmt->fetch(PDO::FETCH_ASSOC);
 
-        if (!$tenant || (int)$data->receiver_id !== (int)$tenant['user_id']) {
-            http_response_code(403);
-            echo json_encode(["message" => "Unauthorized."]);
-            exit();
+        if (!$tenant || $dataReceiverId !== (int) $tenant['user_id']) {
+            security_json_response(403, ["message" => "Unauthorized."]);
         }
-    } else {
-        http_response_code(403);
-        echo json_encode(["message" => "Unauthorized."]);
-        exit();
     }
 
     // Strip tags/control characters so message bodies cannot store markup.
@@ -135,16 +144,18 @@ if ($method === 'POST') {
     $stmt = $conn->prepare($query);
     $stmt->execute([
         ':sender' => $user->user_id,
-        ':receiver' => $data->receiver_id,
-        ':tid' => $data->tenant_id,
+        ':receiver' => $dataReceiverId,
+        ':tid' => $dataTenantId,
         ':msg' => $message
     ]);
 
     audit_log($conn, (int) $user->user_id, 'message.sent', [
         'entity_type' => 'tenant',
-        'entity_id' => (int) $data->tenant_id,
+        'entity_id' => $dataTenantId,
     ]);
 
     echo json_encode(["message" => "Sent"]);
+    exit();
 }
-?>
+
+security_json_response(405, ["message" => "Method not allowed."]);

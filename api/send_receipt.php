@@ -3,9 +3,11 @@ require_once '../config/db.php';
 require_once '../config/mailer.php';
 require_once '../config/security.php';
 require_once '../config/audit.php';
+require_once '../config/permissions.php';
 require_once '../middleware/check_role.php';
 
 $user = authenticate();
+$actor = (array) $user;
 $data = json_decode(file_get_contents("php://input"));
 
 if (!is_object($data)) {
@@ -48,17 +50,14 @@ $stmt = $conn->prepare($query);
 $stmt->execute($params);
 $record = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Authorization: only the tenant, the property owner/agent, or a superadmin.
+// Authorization: the tenant may request their own receipt; staff need
+// payments.view and see the company-wide register.
 $allowed = false;
 if ($record) {
-    if ($user->role === 'superadmin') {
-        $allowed = true;
-    } elseif ($user->role === 'tenant') {
+    if ($user->role === 'tenant') {
         $allowed = (int) $record['tenant_user_id'] === (int) $user->user_id;
-    } elseif (in_array($user->role, ['landlord', 'agent'], true)) {
-        $allowed = (int) $record['tenant_owner_id'] === (int) $user->user_id
-            || (int) $record['property_landlord_id'] === (int) $user->user_id
-            || (int) $record['property_agent_id'] === (int) $user->user_id;
+    } elseif (permission_can($actor, 'payments.view')) {
+        $allowed = true;
     }
 }
 

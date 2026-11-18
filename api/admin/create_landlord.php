@@ -2,14 +2,15 @@
 require_once '../../config/db.php';
 require_once '../../config/security.php';
 require_once '../../config/audit.php';
+require_once '../../config/permissions.php';
 require_once '../../middleware/check_role.php';
 
 $user = authenticate();
 
-// Only Super Admin can access this
-if ($user->role !== 'superadmin') {
-    security_json_response(403, ["message" => "Unauthorized."]);
-}
+// LEGACY: this endpoint predates the internal staff model. New staff accounts
+// must be created through api/staff.php. It is retained only for historical
+// compatibility and is restricted to staff managers.
+permission_require((array) $user, 'staff.manage');
 
 $data = json_decode(file_get_contents("php://input"));
 
