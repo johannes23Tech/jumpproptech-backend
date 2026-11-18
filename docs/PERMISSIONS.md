@@ -45,7 +45,7 @@ Legend: **M** = manage, **V** = view, **A** = assigned/limited, — = no access.
 | Arrears / late penalties | M | M | V | M | — | — | — | V |
 | Maintenance requests | M | M | M | V | M | A | M | V |
 | Expenses | M | M | Submit + view | M + approve | Submit + view | — | — | V |
-| Suppliers / budgets | M | M | — | M | — | — | — | V |
+| Suppliers / budgets | M | M | V | M | V | V | V | V |
 | Utilities / meters | M | M | M | V | M | — | V | V |
 | Reports / exports | M | M | M | M | M | — | V | V |
 | Notifications | M | M | V | V | V | V | V | V |
@@ -112,13 +112,24 @@ New staff accounts are created through `POST /api/staff.php` with an explicit `s
 
 Property managers and auditors have read-only `payments.view`/`arrears.view`. Finance and administrators record and verify payments. Tenants can never mark their own rent as paid.
 
+## Phase 4 endpoint coverage
+
+| Endpoint | Read permission | Write permission | Notes |
+| --- | --- | --- | --- |
+| `GET/POST /api/maintenance.php` | `maintenance.view` | `maintenance.assign` / `maintenance.update` | Internal technician assignment, cost, completion notes, resolution |
+| `GET/POST /api/expenses.php` | `expenses.view` | `expenses.submit` / `expenses.approve` | Expenses start pending; one-manager approval; supplier and attachment |
+| `POST /api/expenses.php` `approve` / `reject` | — | `expenses.approve` / `expenses.submit` | One-manager approval or rejection with reason |
+| `GET/POST /api/suppliers.php` | `suppliers.view` | `suppliers.manage` | Company-approved vendors |
+| `GET/POST /api/budgets.php` | `budgets.view` | `budgets.manage` | Per-property, per-category spending plans |
+
 ## Migration checklist
 
 1. Run `migrations/2026-11-17_phase0_roles_and_company.sql`.
 2. Run `migrations/2026-11-18_phase1_property_tenant_core.sql`.
 3. Run `migrations/2026-11-18_phase2_leases_deposits.sql`. A legacy `leases` table without a `version` column is preserved as `leases_legacy`.
 4. Run `migrations/2026-11-18_phase3_rent_cash_eft.sql`. It adds `tenants.rent_due_day`, obligation due dates, `rent_payments`, `receipts` and `receipt_sequences`.
-5. Verify backfill:
+5. Run `migrations/2026-11-18_phase4_maintenance_expenses.sql`. It adds `suppliers`, `budgets`, and work-order/expense columns.
+6. Verify backfill:
    ```sql
    SELECT role, staff_role, account_type, COUNT(*)
    FROM users GROUP BY role, staff_role, account_type;

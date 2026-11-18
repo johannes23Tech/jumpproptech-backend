@@ -749,9 +749,11 @@ function run_functional(Reporter $reporter, int $port): void
         $landlord = qa_functional_request($port, 'GET', '/api/maintenance.php', 'landlord.a');
         Assert::status(200, $landlord);
         $body = qa_functional_json($landlord);
-        Assert::ok(isset($body['tickets'], $body['contractors']), 'landlord payload is missing tickets/contractors');
+        Assert::ok(isset($body['tickets'], $body['staff']), 'landlord payload is missing tickets/staff');
         $ticketIds = qa_functional_ids($body['tickets']);
-        Assert::ok(in_array(1, $ticketIds, true), 'seeded ticket is not visible to its landlord');
+        Assert::ok(in_array(1, $ticketIds, true), 'seeded ticket is not visible to staff');
+        $staffIds = qa_functional_ids($body['staff']);
+        Assert::ok(in_array(7, $staffIds, true), 'internal maintenance technician is not assignable');
 
         $tenant = qa_functional_request($port, 'GET', '/api/maintenance.php', 'tenant.a');
         Assert::status(200, $tenant);
@@ -762,20 +764,7 @@ function run_functional(Reporter $reporter, int $port): void
         }
     });
 
-    $reporter->test('Contractor creation is landlord-only', function () use ($port): void {
-        $created = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.a', [
-            'json' => ['action' => 'add_contractor', 'name' => 'QA Electrician', 'trade' => 'Electrical', 'phone' => '0766666666'],
-        ]);
-        Assert::status(200, $created);
-        Assert::same(1, (int) qa_value("SELECT COUNT(*) FROM contractors WHERE name = 'QA Electrician' AND owner_id = 2"));
-
-        $denied = qa_functional_request($port, 'POST', '/api/maintenance.php', 'tenant.a', [
-            'json' => ['action' => 'add_contractor', 'name' => 'Rogue', 'trade' => 'X', 'phone' => '0'],
-        ]);
-        Assert::status(403, $denied);
-    });
-
-    $reporter->test('Tenants can open sanitized tickets and landlords can assign/resolve them', function () use ($port): void {
+    $reporter->test('Internal technician assignment is permission-gated', function () use ($port): void {
         $created = qa_functional_request($port, 'POST', '/api/maintenance.php', 'tenant.a', [
             'json' => [
                 'description' => '<script>alert(1)</script>Kitchen sink is blocked',
@@ -796,30 +785,64 @@ function run_functional(Reporter $reporter, int $port): void
         $empty = qa_functional_request($port, 'POST', '/api/maintenance.php', 'tenant.a', ['json' => ['description' => '<script></script>']]);
         Assert::status(400, $empty);
 
+        // A tenant cannot assign a technician.
+        $tenantAssign = qa_functional_request($port, 'POST', '/api/maintenance.php', 'tenant.a', [
+            'json' => ['action' => 'assign_technician', 'ticket_id' => $ticketId, 'technician_id' => 7],
+        ]);
+        Assert::status(403, $tenantAssign);
+
+        // A non-maintenance staff member cannot be assigned.
+        $invalidTech = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.a', [
+            'json' => ['action' => 'assign_technician', 'ticket_id' => $ticketId, 'technician_id' => 15],
+        ]);
+        Assert::status(400, $invalidTech);
+
         $assign = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.a', [
-            'json' => ['ticket_id' => $ticketId, 'contractor_id' => 1, 'severity' => 'Urgent'],
+            'json' => ['action' => 'assign_technician', 'ticket_id' => $ticketId, 'technician_id' => 7, 'severity' => 'Emergency'],
         ]);
         Assert::status(200, $assign);
         $row = qa_query('SELECT * FROM maintenance WHERE id = ?', [$ticketId]);
         Assert::same('In Progress', $row[0]['status']);
-        Assert::same(1, (int) $row[0]['contractor_id']);
+        Assert::same(7, (int) $row[0]['technician_id']);
+        Assert::same('Emergency', $row[0]['severity']);
+    });
+
+    $reporter->test('Resolution requires an assigned technician and completion notes', function () use ($port): void {
+        // Ticket 1 has no technician yet.
+        $noTech = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.a', [
+            'json' => ['action' => 'resolve', 'ticket_id' => 1, 'completion_notes' => 'Fixed the tap'],
+        ]);
+        Assert::status(409, $noTech);
+
+        $assign = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.a', [
+            'json' => ['action' => 'assign_technician', 'ticket_id' => 1, 'technician_id' => 7],
+        ]);
+        Assert::status(200, $assign);
+
+        $noNotes = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.a', [
+            'json' => ['action' => 'resolve', 'ticket_id' => 1],
+        ]);
+        Assert::status(400, $noNotes);
 
         $resolve = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.a', [
-            'json' => ['ticket_id' => 1, 'status' => 'Resolved'],
+            'json' => ['action' => 'resolve', 'ticket_id' => 1, 'completion_notes' => 'Fixed the tap'],
         ]);
         Assert::status(200, $resolve);
         Assert::same('Resolved', qa_value('SELECT status FROM maintenance WHERE id = 1'));
+        Assert::same('Fixed the tap', qa_value('SELECT completion_notes FROM maintenance WHERE id = 1'));
+        Assert::ok(!empty(qa_value('SELECT resolved_at FROM maintenance WHERE id = 1')), 'resolved_at must be recorded');
 
-        $foreign = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.b', [
-            'json' => ['ticket_id' => $ticketId, 'status' => 'Resolved'],
+        // A second resolve is rejected because the ticket is no longer resolvable.
+        $again = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.a', [
+            'json' => ['action' => 'resolve', 'ticket_id' => 1, 'completion_notes' => 'Again'],
         ]);
+        Assert::status(409, $again);
+
         // Company-wide staff can manage any company ticket.
-        Assert::status(200, $foreign);
-
-        $agent = qa_functional_request($port, 'POST', '/api/maintenance.php', 'agent.a', [
-            'json' => ['ticket_id' => 1, 'status' => 'Resolved'],
+        $foreign = qa_functional_request($port, 'POST', '/api/maintenance.php', 'landlord.b', [
+            'json' => ['action' => 'assign_technician', 'ticket_id' => 2, 'technician_id' => 7],
         ]);
-        Assert::status(200, $agent, 'agents must be able to manage tickets on assigned properties');
+        Assert::status(200, $foreign);
     });
 
     $reporter->test('Self-registered tenants without a unit get a clear 400', function () use ($port): void {
@@ -835,15 +858,11 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::contains('No unit has been assigned', $response['body']);
     });
 
-    $reporter->test('Unknown roles cannot fall through to an empty 200 response', function () use ($port): void {
+    $reporter->test('Maintenance technicians cannot assign tickets', function () use ($port): void {
         $response = qa_functional_request($port, 'POST', '/api/maintenance.php', 'maintenance', [
-            'json' => ['action' => 'not-a-real-action'],
+            'json' => ['action' => 'assign_technician', 'ticket_id' => 1, 'technician_id' => 7],
         ]);
-        Assert::same(
-            403,
-            $response['status'],
-            'maintenance POST fell through to an empty ' . $response['status'] . ' response instead of rejecting the role'
-        );
+        Assert::status(403, $response, 'technicians must not be able to assign work orders');
     });
 
     // -----------------------------------------------------------------------
@@ -935,6 +954,7 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::same(1, count($row));
         Assert::same(2, (int) $row[0]['owner_id']);
         Assert::same(1, (int) $row[0]['property_id']);
+        Assert::same('pending', $row[0]['approval_status'], 'new expenses must start pending approval');
 
         $foreign = qa_functional_request($port, 'POST', '/api/expenses.php', 'landlord.a', [
             'json' => ['property_id' => 2, 'category' => 'X', 'amount' => 1, 'expense_date' => date('Y-m-d')],
@@ -961,6 +981,99 @@ function run_functional(Reporter $reporter, int $port): void
         $adminRow = qa_query('SELECT owner_id FROM expenses WHERE property_id = 2 AND amount = 10 ORDER BY id DESC LIMIT 1');
         Assert::same(1, count($adminRow));
         Assert::same(3, (int) $adminRow[0]['owner_id'], 'admin expense must be attributed to the property owner');
+    });
+
+    $reporter->test('Expenses require one-manager approval', function () use ($port): void {
+        $pending = qa_query("SELECT * FROM expenses WHERE approval_status = 'pending' ORDER BY id DESC LIMIT 1");
+        Assert::same(1, count($pending));
+        $expenseId = (int) $pending[0]['id'];
+
+        // A property manager cannot approve.
+        $denied = qa_functional_request($port, 'POST', '/api/expenses.php', 'landlord.a', [
+            'json' => ['action' => 'approve', 'expense_id' => $expenseId],
+        ]);
+        Assert::status(403, $denied);
+
+        // Finance approves.
+        $approve = qa_functional_request($port, 'POST', '/api/expenses.php', 'finance', [
+            'json' => ['action' => 'approve', 'expense_id' => $expenseId],
+        ]);
+        Assert::status(200, $approve);
+        Assert::same('approved', qa_value('SELECT approval_status FROM expenses WHERE id = ?', [$expenseId]));
+        Assert::same(15, (int) qa_value('SELECT approved_by FROM expenses WHERE id = ?', [$expenseId]));
+
+        // Approving twice is rejected.
+        $again = qa_functional_request($port, 'POST', '/api/expenses.php', 'finance', [
+            'json' => ['action' => 'approve', 'expense_id' => $expenseId],
+        ]);
+        Assert::status(409, $again);
+
+        // Rejection requires a reason.
+        $created = qa_functional_request($port, 'POST', '/api/expenses.php', 'landlord.a', [
+            'json' => ['property_id' => 1, 'category' => 'X', 'amount' => 5, 'expense_date' => date('Y-m-d')],
+        ]);
+        Assert::status(200, $created);
+        $pendingId = (int) qa_query("SELECT id FROM expenses WHERE amount = 5 ORDER BY id DESC LIMIT 1")[0]['id'];
+
+        $noReason = qa_functional_request($port, 'POST', '/api/expenses.php', 'finance', [
+            'json' => ['action' => 'reject', 'expense_id' => $pendingId],
+        ]);
+        Assert::status(400, $noReason, 'rejection reason is required');
+
+        $reject = qa_functional_request($port, 'POST', '/api/expenses.php', 'finance', [
+            'json' => ['action' => 'reject', 'expense_id' => $pendingId, 'reason' => 'No supporting invoice'],
+        ]);
+        Assert::status(200, $reject);
+        Assert::same('rejected', qa_value('SELECT approval_status FROM expenses WHERE id = ?', [$pendingId]));
+
+        // An already-approved expense cannot be rejected.
+        $rejectApproved = qa_functional_request($port, 'POST', '/api/expenses.php', 'finance', [
+            'json' => ['action' => 'reject', 'expense_id' => $expenseId, 'reason' => 'Changed my mind'],
+        ]);
+        Assert::status(409, $rejectApproved);
+    });
+
+    $reporter->test('Suppliers and budgets are permission-gated', function () use ($port): void {
+        $suppliers = qa_functional_request($port, 'GET', '/api/suppliers.php', 'landlord.a');
+        Assert::status(200, $suppliers);
+        $body = qa_functional_json($suppliers);
+        Assert::ok(is_array($body) && count($body) >= 1, 'supplier list is empty');
+
+        $created = qa_functional_request($port, 'POST', '/api/suppliers.php', 'landlord.a', [
+            'json' => ['name' => 'QA Electric', 'trade' => 'Electrical', 'phone' => '0766666666', 'email' => 'qa@electric.local'],
+        ]);
+        Assert::status(200, $created);
+
+        $denied = qa_functional_request($port, 'POST', '/api/suppliers.php', 'tenant.a', [
+            'json' => ['name' => 'Rogue'],
+        ]);
+        Assert::status(403, $denied);
+
+        $budgets = qa_functional_request($port, 'GET', '/api/budgets.php', 'finance');
+        Assert::status(200, $budgets);
+
+        $budget = qa_functional_request($port, 'POST', '/api/budgets.php', 'finance', [
+            'json' => [
+                'property_id' => 1,
+                'category' => 'Maintenance',
+                'amount' => 20000,
+                'period_start' => date('Y-m-01'),
+                'period_end' => date('Y-m-t'),
+            ],
+        ]);
+        Assert::status(200, $budget);
+        Assert::same(1, (int) qa_value("SELECT COUNT(*) FROM budgets WHERE property_id = 1 AND category = 'Maintenance'"));
+
+        $badBudget = qa_functional_request($port, 'POST', '/api/budgets.php', 'finance', [
+            'json' => [
+                'property_id' => 1,
+                'category' => 'Maintenance',
+                'amount' => 100,
+                'period_start' => date('Y-m-t'),
+                'period_end' => date('Y-m-01'),
+            ],
+        ]);
+        Assert::status(400, $badBudget);
     });
 
     $reporter->test('Dashboard figures agree with the database', function () use ($port): void {

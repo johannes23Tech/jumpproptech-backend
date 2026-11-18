@@ -689,6 +689,16 @@ These are not permission to invent values. Ask the owner or authorised business 
 
 **Deployment note:** the Phase 3 migration has already been applied to the Azure database. It is additive and safe to re-run.
 
+### 24.1e Phase 4 applied (maintenance and expenses)
+
+- `migrations/2026-11-18_phase4_maintenance_expenses.sql` adds `suppliers`, `budgets`, and work-order/expense columns: `maintenance.technician_id/actual_cost/completion_notes/resolved_at` and `expenses.supplier_id/approval_status/approved_by/approved_at/attachment_url`.
+- `api/maintenance.php` assigns active internal maintenance staff (`maintenance_manager`, `maintenance_technician`, `administrator`, `super_administrator`) as technicians; resolution requires a technician and completion notes.
+- `api/expenses.php` submits expenses as `pending`; one-manager `approve`/`reject` with reason; supplier and Cloudinary attachment support.
+- `api/suppliers.php` and `api/budgets.php` provide CRUD for company-approved vendors and per-property/category spending plans.
+- Frontend: LandlordMaintenance shows technicians for assignment, expense approval/reject, and supplier management; TenantMaintenance shows the assigned technician name.
+
+**Deployment note:** apply the Phase 4 migration before deploying the Phase 4 API.
+
 ### 24.2 Drift to retire
 
 | Drift | Location | Action |
@@ -697,7 +707,7 @@ These are not permission to invent values. Ask the owner or authorised business 
 | Landlord/agency sign-up | `Marketplace.tsx` screens, `api/admin/create_landlord.php` | Freeze; no public business-account endpoint |
 | Subscription/paywall | `Paywall.tsx`, `api/admin/toggle_sub.php`, 402 gate in `middleware/check_role.php` | Disable the gate; keep columns dormant |
 | Multi-landlord boundary | `properties.landlord_id`, scoped queries | Introduce company/portfolio scope; migrate staff accounts |
-| External contractors | `contractors` table, `api/maintenance.php` | Replace with internal staff assignment |
+| External contractors | `contractors` table, `api/maintenance.php` | ~~Replace with internal staff assignment~~ (Phase 4 — internal technician assignment implemented; contractors table kept for legacy read-only) |
 | Random receipts | `api/rent.php` | Replace with sequential receipt service |
 | Five-role model | schema + API + frontend | Migrate to nine-role model |
 

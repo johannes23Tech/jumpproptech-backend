@@ -217,9 +217,27 @@ $qa->exec("INSERT INTO receipts
     VALUES (1, 'RCP-SEED-0001', 3, 5, 5000.00, 'eft', 'issued', 15, '{$prevMonth}')");
 $qa->exec('INSERT INTO receipt_sequences (year, last_number) VALUES (' . (int) $today->format('Y') . ', 1)');
 
+// Apply the Phase 4 maintenance/expenses migration after Phase 3.
+$phase4Path = __DIR__ . '/../migrations/2026-11-18_phase4_maintenance_expenses.sql';
+if (!is_file($phase4Path)) {
+    fail('Phase 4 migration not found: ' . $phase4Path);
+}
+$phase4Sql = preg_replace('/^\s*--.*$/m', '', (string) file_get_contents($phase4Path));
+foreach (array_filter(array_map('trim', explode(';', $phase4Sql))) as $statement) {
+    $qa->exec($statement);
+}
+out('Applied Phase 4 maintenance/expenses migration to the QA schema.');
+
+// Seed a supplier for expense and maintenance fixtures.
+$qa->exec("INSERT INTO suppliers (name, trade, contact_name, phone, email, is_active)
+    VALUES ('QA Plumbing Supplies', 'Plumbing', 'QA Contact', '0733333333', 'qa.supplier@qa.local', 1)");
+
 // Give the finance fixture the finance/accountant staff role. Legacy roles
 // alone cannot express every approved staff role.
 $qa->exec("UPDATE users SET staff_role = 'finance_accountant', account_type = 'staff' WHERE id = 15");
+
+// Internal maintenance technician fixture for Phase 4 work-order assignment.
+$qa->exec("UPDATE users SET staff_role = 'maintenance_technician', account_type = 'staff' WHERE id = 7");
 
 out('Database ready: ' . QA_DB . ' (' . count($tables) . ' tables, ' . count($users) . ' users).');
 out('App credentials: ' . QA_DB_USER . ' / ' . QA_DB_PASS);

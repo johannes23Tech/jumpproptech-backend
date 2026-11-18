@@ -471,6 +471,49 @@ function run_structural(Reporter $reporter): void
         }
     });
 
+    $reporter->test('maintenance, expense, supplier and budget schema is present', function (): void {
+        $supplierColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "suppliers"'),
+            'COLUMN_NAME'
+        );
+        foreach (['name', 'trade', 'contact_name', 'phone', 'email', 'is_active'] as $column) {
+            Assert::ok(in_array($column, $supplierColumns, true), "suppliers missing column: {$column}");
+        }
+
+        $budgetColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "budgets"'),
+            'COLUMN_NAME'
+        );
+        foreach (['property_id', 'category', 'amount', 'period_start', 'period_end', 'created_by'] as $column) {
+            Assert::ok(in_array($column, $budgetColumns, true), "budgets missing column: {$column}");
+        }
+
+        $maintColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "maintenance"'),
+            'COLUMN_NAME'
+        );
+        foreach (['technician_id', 'actual_cost', 'completion_notes', 'resolved_at'] as $column) {
+            Assert::ok(in_array($column, $maintColumns, true), "maintenance missing column: {$column}");
+        }
+
+        $expenseColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "expenses"'),
+            'COLUMN_NAME'
+        );
+        foreach (['supplier_id', 'approval_status', 'approved_by', 'approved_at', 'attachment_url'] as $column) {
+            Assert::ok(in_array($column, $expenseColumns, true), "expenses missing column: {$column}");
+        }
+
+        $expenseStatus = qa_query(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'expenses' AND COLUMN_NAME = 'approval_status'"
+        );
+        $statusType = (string) ($expenseStatus[0]['COLUMN_TYPE'] ?? '');
+        foreach (['pending', 'approved', 'rejected'] as $status) {
+            Assert::contains($status, $statusType, "expenses.approval_status missing value: {$status}");
+        }
+    });
+
     $reporter->test('audit_logs is append-only at the database layer', function (): void {
         $triggers = array_column(
             qa_query('SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE = "audit_logs"'),
