@@ -206,12 +206,18 @@ function permission_require_super_admin(array $user): void
 /**
  * Map an approved staff role to the legacy users.role value that the existing
  * endpoint compatibility layer still understands.
+ *
+ * IMPORTANT: users.role may be a legacy ENUM in some databases (e.g.
+ * landlord/agent/tenant/maintenance/superadmin). Always return a value that is
+ * valid for that column; canonical authorization uses staff_role.
  */
 function permission_legacy_role_for_staff(string $staffRole): string
 {
     $map = [
         'super_administrator' => 'superadmin',
-        'administrator' => 'admin',
+        // 'admin' is not present in some legacy role ENUMs; use 'landlord' as a
+        // safe, DB-compatible legacy bucket while staff_role remains canonical.
+        'administrator' => 'landlord',
         'property_manager' => 'landlord',
         'finance_accountant' => 'landlord',
         'maintenance_manager' => 'landlord',
