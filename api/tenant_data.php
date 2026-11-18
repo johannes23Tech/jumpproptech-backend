@@ -17,9 +17,13 @@ if ($method === 'GET') {
         security_json_response(404, ["message" => "Tenant profile not found."]);
     }
 
-    $query = "SELECT t.*, u.unit_number, p.name as property_name 
+    $query = "SELECT t.*, u.unit_number, u.size_dimensions, u.included_items,
+                     u.prepaid_meter_number, u.monthly_rent AS unit_rent,
+                     b.name AS building_name,
+                     p.name as property_name, p.address as property_address
               FROM tenants t 
               LEFT JOIN units u ON t.unit_id = u.id 
+              LEFT JOIN buildings b ON u.building_id = b.id
               LEFT JOIN properties p ON u.property_id = p.id 
               WHERE t.user_id = :user_id LIMIT 1";
     $stmt = $conn->prepare($query);

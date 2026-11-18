@@ -1,8 +1,8 @@
 # JUMP PROPTECH — Roles and Permissions
 
-**Version:** Phase 0 baseline
-**Updated:** 17 November 2026
-**Status:** Implemented in `config/permissions.php`; endpoint coverage is being migrated incrementally.
+**Version:** Phase 1 baseline
+**Updated:** 18 November 2026
+**Status:** Implemented in `config/permissions.php`. Phase 1 covers applications/QR, properties/units and tenant portal reads.
 
 This matrix is the server-side contract. Hiding a button is not authorization. Every protected endpoint must call `authenticate()` and then either `permission_require()` or an explicit, documented role check.
 
@@ -76,10 +76,22 @@ New staff accounts are created through `POST /api/staff.php` with an explicit `s
 6. **No offline privileged actions.** Payment verification, approvals and role changes are online-only.
 7. **Least privilege on creation.** Do not create a Super Administrator when an Administrator or Property Manager is sufficient.
 
+## Phase 1 endpoint coverage
+
+| Endpoint | Read permission | Write permission | Notes |
+| --- | --- | --- | --- |
+| `GET/POST/PATCH /api/properties.php` | `properties.view` | `properties.manage` | Archive via PATCH; archived rows hidden by default |
+| `GET/POST/PATCH /api/buildings.php` | `properties.view` | `properties.manage` | Optional building layer under a property |
+| `GET/POST/PATCH /api/units.php` | `units.view` | `units.manage` | Building, prepaid meter and archive fields |
+| `GET/POST /api/qr_tokens.php` | `qr.manage` | `qr.manage` | Raw token returned once; only SHA-256 hash stored |
+| `GET/POST /api/applications.php` | `applications.view` | `applications.review` | Approval creates tenant + tenancy atomically |
+| `GET/POST /api/public/onboarding.php` | public | public | Rate-limited, unit-scoped, single-use QR token |
+
 ## Migration checklist
 
 1. Run `migrations/2026-11-17_phase0_roles_and_company.sql`.
-2. Verify backfill:
+2. Run `migrations/2026-11-18_phase1_property_tenant_core.sql`.
+3. Verify backfill:
    ```sql
    SELECT role, staff_role, account_type, COUNT(*)
    FROM users GROUP BY role, staff_role, account_type;

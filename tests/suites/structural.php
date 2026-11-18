@@ -292,9 +292,19 @@ function run_structural(Reporter $reporter): void
             Assert::contains($token, $phase0, "phase 0 migration missing {$token}");
         }
 
+        $phase1 = qa_source('migrations/2026-11-18_phase1_property_tenant_core.sql');
+        foreach (['buildings', 'onboarding_tokens', 'tenant_applications', 'application_documents', 'token_hash', 'archived_at'] as $token) {
+            Assert::contains($token, $phase1, "phase 1 migration missing {$token}");
+        }
+
         $permissions = qa_source('config/permissions.php');
         foreach (['super_administrator', 'finance_accountant', 'maintenance_technician', 'auditor', 'permission_require'] as $token) {
             Assert::contains($token, $permissions, "permission framework missing {$token}");
+        }
+
+        $onboarding = qa_source('config/onboarding.php');
+        foreach (['onboarding_generate_token', 'onboarding_token_hash', 'hash(\'sha256\'', 'ONBOARDING_TOKEN_MAX_DAYS'] as $token) {
+            Assert::contains($token, $onboarding, "onboarding helper missing {$token}");
         }
     });
 
@@ -303,7 +313,7 @@ function run_structural(Reporter $reporter): void
     $reporter->test('Disposable QA schema has every table the API uses', function (): void {
         $tables = qa_query('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()');
         $names = array_column($tables, 'TABLE_NAME');
-        foreach (['users', 'properties', 'units', 'tenants', 'rent_records', 'expenses', 'maintenance', 'messages', 'contractors', 'leases', 'password_resets', 'rate_limits', 'revoked_tokens', 'audit_logs', 'companies'] as $table) {
+        foreach (['users', 'properties', 'units', 'tenants', 'rent_records', 'expenses', 'maintenance', 'messages', 'contractors', 'leases', 'password_resets', 'rate_limits', 'revoked_tokens', 'audit_logs', 'companies', 'buildings', 'onboarding_tokens', 'tenant_applications', 'application_documents'] as $table) {
             Assert::ok(in_array($table, $names, true), "missing table: {$table}");
         }
     });
@@ -315,6 +325,32 @@ function run_structural(Reporter $reporter): void
         );
         foreach (['id', 'full_name', 'email', 'password_hash', 'role', 'subscription_status', 'token_version', 'mfa_secret', 'mfa_enabled', 'mfa_recovery_codes', 'mfa_last_step', 'staff_role', 'account_type', 'company_id', 'is_active'] as $column) {
             Assert::ok(in_array($column, $columns, true), "users missing column: {$column}");
+        }
+    });
+
+    $reporter->test('units schema supports buildings, archiving and prepaid meters', function (): void {
+        $columns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "units"'),
+            'COLUMN_NAME'
+        );
+        foreach (['building_id', 'archived_at', 'prepaid_meter_number'] as $column) {
+            Assert::ok(in_array($column, $columns, true), "units missing column: {$column}");
+        }
+
+        $tokenColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "onboarding_tokens"'),
+            'COLUMN_NAME'
+        );
+        foreach (['unit_id', 'token_hash', 'expires_at', 'revoked_at', 'used_at'] as $column) {
+            Assert::ok(in_array($column, $tokenColumns, true), "onboarding_tokens missing column: {$column}");
+        }
+
+        $applicationColumns = array_column(
+            qa_query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "tenant_applications"'),
+            'COLUMN_NAME'
+        );
+        foreach (['status', 'password_hash', 'rejection_reason', 'reviewed_by', 'tenant_id', 'user_id'] as $column) {
+            Assert::ok(in_array($column, $applicationColumns, true), "tenant_applications missing column: {$column}");
         }
     });
 

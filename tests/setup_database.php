@@ -168,6 +168,17 @@ foreach (array_filter(array_map('trim', explode(';', $phase0Sql))) as $statement
 }
 out('Applied Phase 0 account-model migration to the QA schema.');
 
+// Apply the Phase 1 property/tenant-core migration after Phase 0.
+$phase1Path = __DIR__ . '/../migrations/2026-11-18_phase1_property_tenant_core.sql';
+if (!is_file($phase1Path)) {
+    fail('Phase 1 migration not found: ' . $phase1Path);
+}
+$phase1Sql = preg_replace('/^\s*--.*$/m', '', (string) file_get_contents($phase1Path));
+foreach (array_filter(array_map('trim', explode(';', $phase1Sql))) as $statement) {
+    $qa->exec($statement);
+}
+out('Applied Phase 1 property/tenant-core migration to the QA schema.');
+
 // Give the finance fixture the finance/accountant staff role. Legacy roles
 // alone cannot express every approved staff role.
 $qa->exec("UPDATE users SET staff_role = 'finance_accountant', account_type = 'staff' WHERE id = 15");

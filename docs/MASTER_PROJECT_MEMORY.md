@@ -648,6 +648,19 @@ These are not permission to invent values. Ask the owner or authorised business 
 
 **Deployment note:** run the Phase 0 migration before deploying the matching API, or login and authenticated requests will fail on the new columns.
 
+### 24.1b Phase 1 applied (18 November 2026)
+
+- `migrations/2026-11-18_phase1_property_tenant_core.sql` adds `buildings`, `properties.archived_at`, `units.building_id`, `units.prepaid_meter_number`, `units.archived_at`, `onboarding_tokens`, `tenant_applications` and `application_documents`.
+- Each unit can have one live QR onboarding token. Only a SHA-256 hash is stored; the raw token and application URL are shown once. Generating a new token revokes the previous unused token, and a token is single-use, expiring and revocable.
+- `api/qr_tokens.php` lets authorised staff (`qr.manage`) generate, list and revoke unit QR tokens.
+- `api/public/onboarding.php` resolves a QR link and accepts a first-time tenant application. It is rate-limited, never exposes tenant or company data, and captures no employment or income fields.
+- `api/applications.php` lets staff with `applications.view` inspect applications and staff with `applications.review` mark them under review, reject them with a reason, or approve them. Approval atomically creates the tenant user, tenancy record, first rent obligation and marks the unit occupied.
+- `api/buildings.php` adds the optional building/block layer. `api/properties.php` and `api/units.php` gained archive support, and units gained building, prepaid-meter and QR-status fields.
+- The tenant portal now exposes the building name, unit details and the prepaid electricity meter identifier. Water remains included in rent.
+- Frontend: public `/apply/:token` onboarding page, staff `/applications` review screen, and QR generation/revocation in the Units screen.
+
+**Deployment note:** run the Phase 1 migration before deploying this API. Both migrations are additive and safe to re-run. Run Phase 0 first.
+
 ### 24.2 Drift to retire
 
 | Drift | Location | Action |
@@ -662,11 +675,11 @@ These are not permission to invent values. Ask the owner or authorised business 
 
 ### 24.3 Missing capabilities (build in phase order)
 
-- Buildings layer, unit configuration fields, archive status.
-- Company scope and nine-role permission matrix.
-- QR onboarding tokens and tenant applications.
-- Application review/approval workflow.
-- Tenant portal linked to approved applications.
+- ~~Buildings layer, unit configuration fields, archive status.~~ (Phase 1)
+- ~~Company scope and nine-role permission matrix.~~ (Phase 0)
+- ~~QR onboarding tokens and tenant applications.~~ (Phase 1)
+- ~~Application review/approval workflow.~~ (Phase 1)
+- ~~Tenant portal linked to approved applications.~~ (Phase 1 foundation)
 - Lease versions, e-signature records, deposit ledger, inspections.
 - Contractual due dates, arrears/aging, late-penalty approval.
 - Cash/EFT payment records with proof, verification and rejection states.

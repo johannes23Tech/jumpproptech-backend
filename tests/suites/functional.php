@@ -1352,6 +1352,152 @@ function run_functional(Reporter $reporter, int $port): void
         Assert::false((bool) (qa_functional_json($status)['enabled'] ?? true));
     });
 
+    $reporter->section('Functional — Phase 1 QR onboarding and applications');
+
+    $reporter->test('Phase 1: QR onboarding issues a single-use unit application', function () use ($port, $tokens): void {
+        qa_reset_rate_limits();
+        $suffix = bin2hex(random_bytes(4));
+        $applicantEmail = 'qa.phase1.' . $suffix . '@qa.local';
+        $applicantPassword = 'Phase1!A';
+        $propertyId = 0;
+        $buildingId = 0;
+        $unitId = 0;
+        $applicationId = 0;
+
+        try {
+            $property = qa_auth_request('POST', $port, '/api/properties.php', $tokens['superadmin'], [
+                'json' => ['name' => 'QA Phase1 ' . $suffix, 'address' => '1 QA Phase1', 'property_type' => 'House'],
+            ]);
+            Assert::status(201, $property);
+            $propertyId = (int) ($property['json']['id'] ?? 0);
+
+            $building = qa_auth_request('POST', $port, '/api/buildings.php', $tokens['superadmin'], [
+                'json' => ['property_id' => $propertyId, 'name' => 'Block ' . $suffix],
+            ]);
+            Assert::status(201, $building);
+            $buildingId = (int) ($building['json']['id'] ?? 0);
+
+            $unit = qa_auth_request('POST', $port, '/api/units.php', $tokens['superadmin'], [
+                'json' => [
+                    'property_id' => $propertyId,
+                    'building_id' => $buildingId,
+                    'unit_number' => 'P1-' . $suffix,
+                    'size_dimensions' => '3x3m (1 Room)',
+                    'monthly_rent' => 4200,
+                    'status' => 'Vacant',
+                    'prepaid_meter_number' => 'METER-' . $suffix,
+                ],
+            ]);
+            Assert::status(201, $unit);
+            $unitId = (int) ($unit['json']['id'] ?? 0);
+
+            // Finance has no QR-management permission.
+            $denied = qa_auth_request('POST', $port, '/api/qr_tokens.php', $tokens['finance'], [
+                'json' => ['unit_id' => $unitId],
+            ]);
+            Assert::status(403, $denied);
+
+            $qr = qa_auth_request('POST', $port, '/api/qr_tokens.php', $tokens['superadmin'], [
+                'json' => ['unit_id' => $unitId, 'expires_in_days' => 7],
+            ]);
+            Assert::status(201, $qr);
+            $rawToken = (string) ($qr['json']['token'] ?? '');
+            Assert::ok((bool) preg_match('/^[a-f0-9]{64}$/', $rawToken), 'raw token is not 64 hex chars');
+            Assert::contains('/apply/', (string) ($qr['json']['url'] ?? ''));
+            Assert::same(0, (int) qa_value('SELECT COUNT(*) FROM onboarding_tokens WHERE unit_id = ? AND token_hash = ?', [$unitId, $rawToken]));
+
+            $lookup = qa_http('GET', $port, '/api/public/onboarding.php?token=' . $rawToken);
+            Assert::status(200, $lookup);
+            Assert::same('P1-' . $suffix, $lookup['json']['unit_number'] ?? null);
+            Assert::same(null, $lookup['json']['unit_id'] ?? null, 'public lookup leaked an internal unit id');
+
+            $submit = qa_http('POST', $port, '/api/public/onboarding.php', [
+                'json' => [
+                    'token' => $rawToken,
+                    'full_name' => 'QA Phase1 Applicant',
+                    'email' => $applicantEmail,
+                    'phone' => '0712345678',
+                    'password' => $applicantPassword,
+                    'occupants' => 1,
+                    'documents' => [
+                        ['type' => 'id_document', 'url' => 'https://res.cloudinary.com/demo/image/upload/sample.jpg'],
+                    ],
+                ],
+            ]);
+            Assert::status(201, $submit);
+            Assert::ok(isset($submit['json']['reference']), 'application reference missing');
+            $applicationId = (int) qa_value('SELECT id FROM tenant_applications WHERE email = ? ORDER BY id DESC LIMIT 1', [$applicantEmail]);
+            Assert::ok($applicationId > 0, 'application row was not created');
+
+            $reuse = qa_http('GET', $port, '/api/public/onboarding.php?token=' . $rawToken);
+            Assert::status(404, $reuse, 'QR token was reusable after an application');
+
+            $list = qa_auth_request('GET', $port, '/api/applications.php', $tokens['superadmin']);
+            Assert::status(200, $list);
+            Assert::same(1, count((array) ($list['json'][0]['documents'] ?? [])));
+
+            $financeList = qa_auth_request('GET', $port, '/api/applications.php', $tokens['finance']);
+            Assert::status(403, $financeList);
+
+            $review = qa_auth_request('POST', $port, '/api/applications.php', $tokens['superadmin'], [
+                'json' => ['id' => $applicationId, 'action' => 'review'],
+            ]);
+            Assert::status(200, $review);
+
+            $approve = qa_auth_request('POST', $port, '/api/applications.php', $tokens['superadmin'], [
+                'json' => [
+                    'id' => $applicationId,
+                    'action' => 'approve',
+                    'lease_start' => date('Y-m-d'),
+                    'lease_end' => date('Y-m-d', strtotime('+6 months')),
+                    'deposit' => 4200,
+                    'monthly_rent' => 4200,
+                ],
+            ]);
+            Assert::status(200, $approve);
+            Assert::ok(!empty($approve['json']['tenant_id']), 'approval did not create a tenant');
+
+            Assert::same('Occupied', qa_value('SELECT status FROM units WHERE id = ?', [$unitId]));
+            Assert::same('approved', qa_value('SELECT status FROM tenant_applications WHERE id = ?', [$applicationId]));
+            Assert::same(1, (int) qa_value('SELECT COUNT(*) FROM rent_records WHERE unit_id = ?', [$unitId]));
+
+            $tenantLogin = qa_login($port, $applicantEmail, $applicantPassword);
+            Assert::status(200, $tenantLogin);
+            $tenantToken = (string) ($tenantLogin['json']['token'] ?? '');
+
+            $tenantData = qa_http('GET', $port, '/api/tenant_data.php', [
+                'headers' => ['Authorization' => 'Bearer ' . $tenantToken],
+            ]);
+            Assert::status(200, $tenantData);
+            Assert::same('METER-' . $suffix, $tenantData['json']['tenant']['prepaid_meter_number'] ?? null);
+
+            $tenantApplications = qa_http('GET', $port, '/api/applications.php', [
+                'headers' => ['Authorization' => 'Bearer ' . $tenantToken],
+            ]);
+            Assert::status(403, $tenantApplications);
+        } finally {
+            if ($applicationId > 0) {
+                qa_exec('DELETE FROM application_documents WHERE application_id = ?', [$applicationId]);
+                qa_exec('DELETE FROM tenant_applications WHERE id = ?', [$applicationId]);
+            }
+            if ($unitId > 0) {
+                qa_exec('DELETE FROM tenant_applications WHERE unit_id = ?', [$unitId]);
+                qa_exec('DELETE FROM rent_records WHERE unit_id = ?', [$unitId]);
+                qa_exec('DELETE FROM tenants WHERE unit_id = ?', [$unitId]);
+                qa_exec('DELETE FROM onboarding_tokens WHERE unit_id = ?', [$unitId]);
+                qa_exec('DELETE FROM units WHERE id = ?', [$unitId]);
+            }
+            if ($buildingId > 0) {
+                qa_exec('DELETE FROM buildings WHERE id = ?', [$buildingId]);
+            }
+            if ($propertyId > 0) {
+                qa_exec('DELETE FROM properties WHERE id = ?', [$propertyId]);
+            }
+            qa_exec('DELETE FROM users WHERE email = ?', [$applicantEmail]);
+            qa_reset_rate_limits();
+        }
+    });
+
     $reporter->test('Authentication events are written to the append-only audit log', function (): void {
         foreach ([
             'auth.login.success',
