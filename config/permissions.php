@@ -42,6 +42,8 @@ const JPT_STAFF_ROLE_LABELS = [
 // Legacy users.role -> approved staff role.
 const JPT_LEGACY_STAFF_ROLE_MAP = [
     'superadmin' => 'super_administrator',
+    'admin' => 'administrator',
+    'super admin' => 'super_administrator',
     'landlord' => 'property_manager',
     'agent' => 'property_manager',
     'maintenance' => 'maintenance_technician',
@@ -195,7 +197,7 @@ function permission_legacy_role_for_staff(string $staffRole): string
 {
     $map = [
         'super_administrator' => 'superadmin',
-        'administrator' => 'landlord',
+        'administrator' => 'admin',
         'property_manager' => 'landlord',
         'finance_accountant' => 'landlord',
         'maintenance_manager' => 'landlord',

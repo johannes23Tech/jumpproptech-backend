@@ -58,9 +58,29 @@ if ($method === 'POST') {
     // MySQL has a chance to coerce it to an empty string.
     $allowedTypes = ['Precast Structure', 'Backroom', 'Apartment Block', 'House'];
 
-    if ($name === '' || $address === '' || !in_array($propertyType, $allowedTypes, true)) {
+    // Validate required fields with detailed feedback
+    $validationErrors = [];
+    if ($name === '') {
+        $validationErrors[] = 'Name is required.';
+    }
+    if ($address === '') {
+        $validationErrors[] = 'Address is required.';
+    }
+    // Allow case‑insensitive matching for property type
+    $typeMatch = false;
+    foreach ($allowedTypes as $type) {
+        if (strcasecmp($propertyType, $type) === 0) {
+            $propertyType = $type; // normalize to canonical value
+            $typeMatch = true;
+            break;
+        }
+    }
+    if (!$typeMatch) {
+        $validationErrors[] = 'A valid property type is required (allowed: ' . implode(", ", $allowedTypes) . ').';
+    }
+    if ($validationErrors) {
         security_json_response(400, [
-            "message" => "Name, address and a valid property type are required."
+            "message" => implode(' ', $validationErrors)
         ]);
     }
 

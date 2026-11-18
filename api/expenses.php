@@ -19,11 +19,13 @@ if ($method === 'GET') {
     // Single-company portfolio: authorised staff see every company expense.
     $query = "SELECT e.*, p.name as property_name,
                     s.name as supplier_name, s.trade as supplier_trade,
-                    approver.full_name as approved_by_name
+                    approver.full_name as approved_by_name,
+                    reverser.full_name as reversed_by_name
               FROM expenses e
               JOIN properties p ON e.property_id = p.id
               LEFT JOIN suppliers s ON e.supplier_id = s.id
               LEFT JOIN users approver ON e.approved_by = approver.id
+              LEFT JOIN users reverser ON e.reversed_by = reverser.id
               ORDER BY e.expense_date DESC";
     $stmt = $conn->prepare($query);
     $stmt->execute();
@@ -48,21 +50,65 @@ if ($method === 'POST') {
     }
 
     // STAFF: Approve or reject a pending expense (one-manager approval).
-    if (isset($data->action) && is_string($data->action) && in_array($data->action, ['approve', 'reject'], true)) {
+    if (isset($data->action) && is_string($data->action) && in_array($data->action, ['approve', 'reject', 'reverse'], true)) {
         $expenseId = filter_var($data->expense_id ?? 0, FILTER_VALIDATE_INT);
         if ($expenseId === false || $expenseId < 1) {
             security_json_response(400, ["message" => "A valid expense id is required."]);
         }
 
+        if ($data->action === 'reverse') {
+            permission_require($actor, 'expenses.approve');
+
+            $check = $conn->prepare("SELECT id, approval_status, reversed_at FROM expenses WHERE id = :id LIMIT 1");
+            $check->execute([':id' => $expenseId]);
+            $expense = $check->fetch(PDO::FETCH_ASSOC);
+
+            if (!$expense) {
+                security_json_response(404, ["message" => "Expense not found."]);
+            }
+            if ($expense['approval_status'] !== 'approved') {
+                security_json_response(409, ["message" => "Only an approved expense can be reversed."]);
+            }
+            if (!empty($expense['reversed_at'])) {
+                security_json_response(409, ["message" => "This expense has already been reversed."]);
+            }
+
+            $reason = security_clean_text($data->reason ?? '', 500);
+            if (strlen($reason) < 3) {
+                security_json_response(400, ["message" => "A reversal reason is required."]);
+            }
+
+            $conn->prepare(
+                "UPDATE expenses SET reversed_by = :by, reversed_at = NOW(), reversal_reason = :reason
+                 WHERE id = :id AND reversed_at IS NULL"
+            )->execute([
+                ':by' => (int) $user->user_id,
+                ':reason' => $reason,
+                ':id' => $expenseId,
+            ]);
+
+            audit_log($conn, (int) $user->user_id, 'expense.reversed', [
+                'entity_type' => 'expense',
+                'entity_id' => $expenseId,
+                'meta' => ['reason' => $reason],
+            ]);
+
+            echo json_encode(["message" => "Expense reversed."]);
+            exit();
+        }
+
         $permission = $data->action === 'approve' ? 'expenses.approve' : 'expenses.submit';
         permission_require($actor, $permission);
 
-        $check = $conn->prepare("SELECT id, approval_status FROM expenses WHERE id = :id LIMIT 1");
+        $check = $conn->prepare("SELECT id, approval_status, reversed_at FROM expenses WHERE id = :id LIMIT 1");
         $check->execute([':id' => $expenseId]);
         $expense = $check->fetch(PDO::FETCH_ASSOC);
 
         if (!$expense) {
             security_json_response(404, ["message" => "Expense not found."]);
+        }
+        if (!empty($expense['reversed_at'])) {
+            security_json_response(409, ["message" => "A reversed expense cannot be changed."]);
         }
 
         if ($expense['approval_status'] !== 'pending') {

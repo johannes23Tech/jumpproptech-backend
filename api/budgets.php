@@ -22,7 +22,30 @@ if ($method === 'GET') {
          JOIN properties p ON b.property_id = p.id
          ORDER BY b.period_start DESC, b.id DESC"
     );
-    echo json_encode($stmt->fetchAll(PDO::FETCH_ASSOC));
+    $budgets = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Spend counts only approved, non-reversed expenses inside the period.
+    $spend = $conn->prepare(
+        "SELECT COALESCE(SUM(amount), 0) FROM expenses
+         WHERE property_id = :property_id AND category = :category
+           AND approval_status = 'approved' AND reversed_at IS NULL
+           AND expense_date BETWEEN :period_start AND :period_end"
+    );
+
+    foreach ($budgets as &$budget) {
+        $spend->execute([
+            ':property_id' => (int) $budget['property_id'],
+            ':category' => (string) $budget['category'],
+            ':period_start' => (string) $budget['period_start'],
+            ':period_end' => (string) $budget['period_end'],
+        ]);
+        $spent = (float) $spend->fetchColumn();
+        $budget['spent'] = round($spent, 2);
+        $budget['remaining'] = round((float) $budget['amount'] - $spent, 2);
+    }
+    unset($budget);
+
+    echo json_encode($budgets);
     exit();
 }
 
