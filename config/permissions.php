@@ -58,6 +58,7 @@ const JPT_ROLE_PERMISSIONS = [
         'properties.view', 'properties.manage', 'units.view', 'units.manage',
         'tenants.view', 'tenants.manage', 'applications.view', 'applications.review',
         'leases.view', 'leases.manage', 'deposits.view', 'deposits.manage',
+        'contracts.view', 'contracts.manage', 'templates.manage',
         'payments.view', 'payments.record_cash', 'payments.verify_eft', 'payments.reconcile',
         'payments.reverse', 'arrears.view', 'arrears.apply_penalty',
         'maintenance.view', 'maintenance.create', 'maintenance.triage',
@@ -71,6 +72,7 @@ const JPT_ROLE_PERMISSIONS = [
         'properties.view', 'properties.manage', 'units.view', 'units.manage',
         'tenants.view', 'tenants.manage', 'applications.view', 'applications.review',
         'leases.view', 'leases.manage', 'deposits.view', 'deposits.manage',
+        'contracts.view', 'contracts.manage',
         'payments.view', 'arrears.view',
         'maintenance.view', 'maintenance.create', 'maintenance.triage', 'maintenance.assign',
         'expenses.view', 'expenses.submit',
@@ -82,6 +84,7 @@ const JPT_ROLE_PERMISSIONS = [
     'finance_accountant' => [
         'properties.view', 'units.view', 'tenants.view',
         'leases.view', 'deposits.view', 'deposits.manage',
+        'contracts.view',
         'payments.view', 'payments.record_cash', 'payments.verify_eft', 'payments.reconcile',
         'payments.reverse', 'arrears.view', 'arrears.apply_penalty',
         'expenses.view', 'expenses.submit', 'expenses.approve',
@@ -108,6 +111,7 @@ const JPT_ROLE_PERMISSIONS = [
     'reception_support' => [
         'properties.view', 'units.view', 'tenants.view',
         'applications.view', 'applications.review',
+        'contracts.view',
         'maintenance.view', 'maintenance.create',
         'suppliers.view', 'budgets.view',
         'utilities.view',
@@ -117,6 +121,7 @@ const JPT_ROLE_PERMISSIONS = [
     'auditor' => [
         'properties.view', 'units.view', 'tenants.view',
         'applications.view', 'leases.view', 'deposits.view',
+        'contracts.view',
         'payments.view', 'arrears.view', 'maintenance.view',
         'expenses.view', 'suppliers.view', 'budgets.view',
         'utilities.view', 'reports.view', 'audit.view',
